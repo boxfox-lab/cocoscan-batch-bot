@@ -60,25 +60,25 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/1468444406016118816/wz2J3kLDcN
 echo "======================================"
 echo "📦 Step 1: Install Dependencies"
 echo "======================================"
-yarn install --frozen-lockfile
+npm ci
 
 echo ""
 echo "======================================"
 echo "🧪 Step 2: Run Unit &amp; E2E Tests"
 echo "======================================"
-yarn test
+npm run test
 
 echo ""
 echo "======================================"
 echo "🏗️  Step 3: Build Application"
 echo "======================================"
-yarn build:new
+npm run build:new
 
 echo ""
 echo "======================================"
 echo "🚀 Step 4: Deploy to Production"
 echo "======================================"
-yarn deploy
+npm run deploy
 
 echo ""
 echo "======================================"
