@@ -44,7 +44,7 @@
   </triggers>
   <concurrentBuild>false</concurrentBuild>
   <builders>
-    <!-- Step 1: Install Dependencies -->
+    <!-- All Build Steps in One Shell -->
     <hudson.tasks.Shell>
       <command>#!/bin/bash
 set -e
@@ -53,83 +53,37 @@ set -e
 export NVM_DIR="/opt/nvm"
 source "$NVM_DIR/nvm.sh"
 nvm use 21
+
+# Discord Webhook URL (상수)
+DISCORD_WEBHOOK="https://discord.com/api/webhooks/1468444406016118816/wz2J3kLDcNAo1FjJpdH-R7ly4NItzjv70K6L_iWBLzwULqTUcjN8lmZbpCJx_zB6_A9R"
 
 echo "======================================"
 echo "📦 Step 1: Install Dependencies"
 echo "======================================"
+yarn install --frozen-lockfile
 
-yarn install --frozen-lockfile</command>
-      <configuredLocalRules/>
-    </hudson.tasks.Shell>
-
-    <!-- Step 2: Run Tests -->
-    <hudson.tasks.Shell>
-      <command>#!/bin/bash
-set -e
-
-# NVM 초기화
-export NVM_DIR="/opt/nvm"
-source "$NVM_DIR/nvm.sh"
-nvm use 21
-
+echo ""
 echo "======================================"
 echo "🧪 Step 2: Run Unit &amp; E2E Tests"
 echo "======================================"
+yarn test
 
-yarn test</command>
-      <configuredLocalRules/>
-    </hudson.tasks.Shell>
-
-    <!-- Step 3: Build Application -->
-    <hudson.tasks.Shell>
-      <command>#!/bin/bash
-set -e
-
-# NVM 초기화
-export NVM_DIR="/opt/nvm"
-source "$NVM_DIR/nvm.sh"
-nvm use 21
-
+echo ""
 echo "======================================"
 echo "🏗️  Step 3: Build Application"
 echo "======================================"
+yarn build:new
 
-yarn build:new</command>
-      <configuredLocalRules/>
-    </hudson.tasks.Shell>
-
-    <!-- Step 4: Deploy to Production -->
-    <hudson.tasks.Shell>
-      <command>#!/bin/bash
-set -e
-
-# NVM 초기화
-export NVM_DIR="/opt/nvm"
-source "$NVM_DIR/nvm.sh"
-nvm use 21
-
+echo ""
 echo "======================================"
 echo "🚀 Step 4: Deploy to Production"
 echo "======================================"
+yarn deploy
 
-yarn deploy</command>
-      <configuredLocalRules/>
-    </hudson.tasks.Shell>
-
-    <!-- Step 5: Verify Deployment -->
-    <hudson.tasks.Shell>
-      <command>#!/bin/bash
-set -e
-
-# NVM 초기화
-export NVM_DIR="/opt/nvm"
-source "$NVM_DIR/nvm.sh"
-nvm use 21
-
+echo ""
 echo "======================================"
 echo "✅ Step 5: Verify Deployment"
 echo "======================================"
-
 # PM2 프로세스 상태 확인
 npx pm2 list | grep cocoscan-batch-bot
 
