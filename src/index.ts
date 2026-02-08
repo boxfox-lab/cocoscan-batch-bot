@@ -1,6 +1,7 @@
 import { createCocoscanBatchBot } from "./createCocoscanBatchBot";
 import { GlobalErrorHandler } from "./util/error/global-error-handler";
 import { validateEnvironmentVariables } from "./config/env";
+import { initializeDatabase, closeDatabase } from "./database/data-source";
 
 process.on("uncaughtException", async (error) => {
   await GlobalErrorHandler.handleError(error, "UncaughtException");
@@ -26,10 +27,20 @@ async function main() {
     }
     console.log("✅ 환경변수 검증 완료\n");
 
+    // DB 연결
+    console.log("🔌 데이터베이스 연결 중...");
+    await initializeDatabase();
+    console.log("✅ 데이터베이스 연결 완료\n");
+
     const start = createCocoscanBatchBot();
     await start();
+
+    // 정상 종료 시 DB 연결 해제
+    await closeDatabase();
   } catch (error) {
     await GlobalErrorHandler.handleError(error as Error, "main");
+    // 에러 발생 시에도 DB 연결 해제
+    await closeDatabase().catch(console.error);
     process.exit(1);
   }
 }

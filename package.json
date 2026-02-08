@@ -18,7 +18,10 @@
     "axios": "^0.21.1",
     "date-fns": "^3.5.0",
     "dotenv": "^16.0.0",
+    "pg": "^8.18.0",
+    "reflect-metadata": "^0.1.13",
     "rimraf": "3.0.2",
+    "typeorm": "^0.3.28",
     "uuid": "^9.0.0",
     "youtube-caption-extractor": "^1.9.1"
   },
