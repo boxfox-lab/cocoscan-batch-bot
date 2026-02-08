@@ -49,6 +49,11 @@
       <command>#!/bin/bash
 set -e
 
+# NVM 초기화
+export NVM_DIR="/opt/nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 21
+
 echo "======================================"
 echo "📦 Step 1: Install Dependencies"
 echo "======================================"
@@ -61,6 +66,11 @@ yarn install --frozen-lockfile</command>
     <hudson.tasks.Shell>
       <command>#!/bin/bash
 set -e
+
+# NVM 초기화
+export NVM_DIR="/opt/nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 21
 
 echo "======================================"
 echo "🧪 Step 2: Run Unit &amp; E2E Tests"
@@ -75,6 +85,11 @@ yarn test</command>
       <command>#!/bin/bash
 set -e
 
+# NVM 초기화
+export NVM_DIR="/opt/nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 21
+
 echo "======================================"
 echo "🏗️  Step 3: Build Application"
 echo "======================================"
@@ -88,6 +103,11 @@ yarn build:new</command>
       <command>#!/bin/bash
 set -e
 
+# NVM 초기화
+export NVM_DIR="/opt/nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 21
+
 echo "======================================"
 echo "🚀 Step 4: Deploy to Production"
 echo "======================================"
@@ -100,6 +120,11 @@ yarn deploy</command>
     <hudson.tasks.Shell>
       <command>#!/bin/bash
 set -e
+
+# NVM 초기화
+export NVM_DIR="/opt/nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 21
 
 echo "======================================"
 echo "✅ Step 5: Verify Deployment"
