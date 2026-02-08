@@ -1,7 +1,6 @@
 import { sendDevMessage } from '../remotes/discord';
 
 const {
-  COCOSCAN_DISCORD_WEBHOOK_URL,
   GEMINI_API_KEY,
   YOUTUBE_API_KEY,
   GOOGLE_SEARCH_API_KEY,
@@ -13,7 +12,6 @@ const {
  * 필수 환경변수 목록
  */
 const REQUIRED_ENV_VARS = {
-  COCOSCAN_DISCORD_WEBHOOK_URL: 'Cocoscan Discord 웹훅 URL',
   GEMINI_API_KEY: 'Google Gemini API 키 (AI 요약용)',
   YOUTUBE_API_KEY: 'YouTube Data API 키',
   GOOGLE_SEARCH_API_KEY: 'Google Custom Search API 키',
@@ -70,7 +68,6 @@ ${details.join('\n')}
 }
 
 export {
-  COCOSCAN_DISCORD_WEBHOOK_URL,
   GEMINI_API_KEY,
   YOUTUBE_API_KEY,
   GOOGLE_SEARCH_API_KEY,

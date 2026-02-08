@@ -19,9 +19,7 @@ import { GlobalErrorHandler } from '../../util/error/global-error-handler';
 import { sendDiscordMessage } from '../../remotes/discord/sendDiscordMessage';
 import { CostcoSummaryService } from '../costco-summary';
 
-// TODO: 환경변수로 관리하는 것이 좋습니다
 const COCOSCAN_DISCORD_WEBHOOK_URL =
-  process.env.COCOSCAN_DISCORD_WEBHOOK_URL ||
   'https://discord.com/api/webhooks/1442706911119151276/qVB4crG3fHSgtPUxehMT9QkxyXzqsx47p7FCT0lhZHL6Mgj-G2LYb86PjQl_RHN0HYoO';
 
 interface ChannelConfig {
