@@ -6,7 +6,6 @@
 set -e
 
 # Jenkins 설정
-JENKINS_URL="http://1.234.82.82:8088"
 JOB_NAME="cocoscan-batch-bot"
 CONFIG_FILE="jenkins-config.xml"
 
@@ -21,12 +20,18 @@ echo "Jenkins Freestyle 프로젝트 생성"
 echo -e "======================================${NC}"
 echo ""
 
-# Jenkins 인증 정보 입력
-echo -e "${YELLOW}Jenkins 인증 정보를 입력하세요:${NC}"
-read -p "Jenkins 사용자명: " JENKINS_USER
-read -sp "Jenkins API Token 또는 비밀번호: " JENKINS_TOKEN
-echo ""
-echo ""
+# ~/.cursor/jenkins.env에서 환경 변수 로드
+if [ -f ~/.cursor/jenkins.env ]; then
+  echo "환경 변수 로드 중..."
+  source ~/.cursor/jenkins.env
+  echo -e "${GREEN}✅ 환경 변수 로드 완료${NC}"
+  echo "  - JENKINS_URL: ${JENKINS_URL}"
+  echo "  - JENKINS_USER: ${JENKINS_USER}"
+  echo ""
+else
+  echo -e "${RED}❌ ~/.cursor/jenkins.env 파일을 찾을 수 없습니다.${NC}"
+  exit 1
+fi
 
 # config.xml 파일 존재 확인
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -46,12 +51,8 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
 
 if [ "$HTTP_CODE" = "200" ]; then
   echo -e "${YELLOW}⚠️  '${JOB_NAME}' Job이 이미 존재합니다.${NC}"
-  read -p "덮어쓰시겠습니까? (y/N): " OVERWRITE
-
-  if [[ ! "$OVERWRITE" =~ ^[Yy]$ ]]; then
-    echo "작업이 취소되었습니다."
-    exit 0
-  fi
+  echo "자동으로 덮어쓰기를 진행합니다..."
+  echo ""
 
   echo "기존 Job 업데이트 중..."
   curl -X POST \
