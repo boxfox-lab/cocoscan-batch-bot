@@ -83,7 +83,7 @@ export class AnalysisAgent {
     storeName: string = '코스트코',
   ): Promise<AnalysisResult> {
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-3.0-flash-lite',
+      model: 'gemini-2.0-flash-lite',
       generationConfig: {
         responseMimeType: 'application/json',
       },
@@ -139,7 +139,7 @@ ${topic.relevantContent}`;
     searchResults: StoreSearchResult[],
   ): Promise<AnalyzedProduct> {
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-3.0-flash-lite',
+      model: 'gemini-2.0-flash-lite',
       generationConfig: {
         responseMimeType: 'application/json',
       },

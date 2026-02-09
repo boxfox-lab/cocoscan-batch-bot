@@ -27,7 +27,7 @@ export class TopicSplitterAgent {
     console.log(`[TopicSplitterAgent] 주제 분류 시작 (${storeName})...`);
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-3.0-flash-lite',
+      model: 'gemini-2.0-flash-lite',
       generationConfig: {
         responseMimeType: 'application/json',
       },

@@ -27,7 +27,7 @@ export class ProofreaderAgent {
     console.log(`[ProofreaderAgent] Article 교정 시작: ${draft.title}`);
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-3.0-flash-lite',
+      model: 'gemini-2.0-flash-lite',
       generationConfig: {
         responseMimeType: 'application/json',
       },

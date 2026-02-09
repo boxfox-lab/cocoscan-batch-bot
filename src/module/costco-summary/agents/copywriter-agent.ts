@@ -38,7 +38,7 @@ export class CopywriterAgent {
     );
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-3.0-flash-lite',
+      model: 'gemini-2.0-flash-lite',
       generationConfig: {
         responseMimeType: 'application/json',
       },
