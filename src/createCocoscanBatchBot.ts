@@ -14,7 +14,7 @@ export function createCocoscanBatchBot() {
     await startJob(
       "cocoscan batch bot",
       () => cocoscanService.process(),
-      60000 * 10, // 10분마다 체크
+      60000 // 1분마다 체크
     );
   };
 }
