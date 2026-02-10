@@ -1,12 +1,8 @@
 import { getSubtitles } from "youtube-caption-extractor";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export class CaptionExtractionService {
   /** 서킷 브레이커: timedtext 429 발생 시 이번 배치에서 timedtext 스킵 */
   private timedtextBlocked = false;
-
-  /** Gemini AI 클라이언트 (lazy init) */
-  private genAI: GoogleGenerativeAI | null = null;
 
   /** 배치 시작 시 서킷 브레이커 초기화 */
   resetCircuitBreaker(): void {
@@ -19,7 +15,6 @@ export class CaptionExtractionService {
    * 2차: InnerTube /next → /get_transcript (timedtext 미사용)
    * 3차: ANDROID 클라이언트 (timedtext 사용, 서킷 브레이커 적용)
    * 4차: YouTube 페이지 스크래핑 (timedtext 사용)
-   * 5차: Gemini Audio STT (InnerTube 오디오 → Gemini, 최종 수단)
    */
   async getVideoCaption(videoId: string): Promise<string | null> {
     console.log(`[Caption] === 자막 추출 시작: ${videoId} ===`);
@@ -42,7 +37,7 @@ export class CaptionExtractionService {
       console.log(`[Caption] WEB en 결과: ${enCaption?.length ?? 0}개`);
     } catch (error) {
       console.log(
-        `[Caption] WEB 실패: ${error instanceof Error ? error.message : error}`,
+        `[Caption] WEB 실패: ${error instanceof Error ? error.message : error}`
       );
     }
 
@@ -54,7 +49,7 @@ export class CaptionExtractionService {
     // 서킷 브레이커: 이전 영상에서 timedtext 429 발생 시 3~4차 스킵
     if (this.timedtextBlocked) {
       console.log(
-        "[Caption] 3~4차 스킵: timedtext 서킷 브레이커 (이전 429 발생)",
+        "[Caption] 3~4차 스킵: timedtext 서킷 브레이커 (이전 429 발생)"
       );
     } else {
       // 3차: ANDROID 클라이언트 (timedtext 사용)
@@ -65,7 +60,7 @@ export class CaptionExtractionService {
       if (androidResult.rateLimited) {
         this.timedtextBlocked = true;
         console.log(
-          "[Caption] timedtext 서킷 브레이커 활성화 — 이후 영상은 timedtext 스킵",
+          "[Caption] timedtext 서킷 브레이커 활성화 — 이후 영상은 timedtext 스킵"
         );
       } else {
         // 4차: 페이지 스크래핑 (timedtext 사용)
@@ -73,17 +68,6 @@ export class CaptionExtractionService {
         const pageCaption = await this.getCaptionFromPage(videoId);
         if (pageCaption) return pageCaption;
       }
-    }
-
-    // 5차: Gemini Audio STT (최종 수단, API 비용 발생)
-    try {
-      console.log("[Caption] 5차: Gemini Audio STT");
-      const geminiCaption = await this.getCaptionFromGeminiStt(videoId);
-      if (geminiCaption) return geminiCaption;
-    } catch (error) {
-      console.log(
-        `[Caption] Gemini STT 실패: ${error instanceof Error ? error.message : error}`,
-      );
     }
 
     console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
@@ -94,7 +78,7 @@ export class CaptionExtractionService {
    * ANDROID 클라이언트로 InnerTube API를 호출하여 자막을 가져옵니다.
    */
   private async getCaptionFromAndroidClient(
-    videoId: string,
+    videoId: string
   ): Promise<{ caption: string | null; rateLimited: boolean }> {
     try {
       const response = await this.fetchWithTimeout(
@@ -114,12 +98,12 @@ export class CaptionExtractionService {
               },
             },
           }),
-        },
+        }
       );
 
       if (!response.ok) {
         console.log(
-          `[Caption:ANDROID] HTTP 실패: ${response.status} ${response.statusText}`,
+          `[Caption:ANDROID] HTTP 실패: ${response.status} ${response.statusText}`
         );
         return { caption: null, rateLimited: false };
       }
@@ -128,7 +112,7 @@ export class CaptionExtractionService {
       const status = data.playabilityStatus?.status;
       const reason = data.playabilityStatus?.reason;
       console.log(
-        `[Caption:ANDROID] 상태: ${status}${reason ? ` (${reason})` : ""}`,
+        `[Caption:ANDROID] 상태: ${status}${reason ? ` (${reason})` : ""}`
       );
 
       if (status !== "OK") return { caption: null, rateLimited: false };
@@ -196,7 +180,7 @@ export class CaptionExtractionService {
    * timedtext URL을 거치지 않아 429 rate limit을 우회합니다.
    */
   private async getCaptionFromTranscript(
-    videoId: string,
+    videoId: string
   ): Promise<string | null> {
     try {
       const session = this.generateInnerTubeSession();
@@ -212,7 +196,7 @@ export class CaptionExtractionService {
             ...session.payload,
             videoId,
           }),
-        },
+        }
       );
 
       if (!nextResponse.ok) {
@@ -242,7 +226,7 @@ export class CaptionExtractionService {
             context: session.payload.context,
             params: token,
           }),
-        },
+        }
       );
 
       if (!transcriptResponse.ok) {
@@ -251,7 +235,7 @@ export class CaptionExtractionService {
           .catch(() => "(읽기 실패)");
         console.log(
           `[Caption:Transcript] /get_transcript 실패: ${transcriptResponse.status}`,
-          errorBody.substring(0, 300),
+          errorBody.substring(0, 300)
         );
         return null;
       }
@@ -271,7 +255,7 @@ export class CaptionExtractionService {
     const transcriptPanel = panels.find(
       (p: any) =>
         p?.engagementPanelSectionListRenderer?.panelIdentifier ===
-        "engagement-panel-searchable-transcript",
+        "engagement-panel-searchable-transcript"
     );
 
     if (!transcriptPanel) {
@@ -336,7 +320,7 @@ export class CaptionExtractionService {
     if (!initialSegments || !Array.isArray(initialSegments)) {
       console.log(
         "[Caption:Transcript] initialSegments 없음. 응답 키:",
-        JSON.stringify(Object.keys(transcriptData)).substring(0, 200),
+        JSON.stringify(Object.keys(transcriptData)).substring(0, 200)
       );
       return null;
     }
@@ -362,7 +346,7 @@ export class CaptionExtractionService {
 
     const caption = segments.join(" ");
     console.log(
-      `[Caption:Transcript] 추출 성공: ${caption.length}자 (${segments.length}개 세그먼트)`,
+      `[Caption:Transcript] 추출 성공: ${caption.length}자 (${segments.length}개 세그먼트)`
     );
     return caption;
   }
@@ -379,7 +363,7 @@ export class CaptionExtractionService {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
           },
-        },
+        }
       );
 
       if (!response.ok) {
@@ -396,7 +380,7 @@ export class CaptionExtractionService {
         const hasCaptions = html.includes("captions");
         const hasConsentForm = html.includes("consent.youtube.com");
         console.log(
-          `[Caption:Page] captionTracks 없음 (playerResponse=${hasPlayerResponse}, captions=${hasCaptions}, consent=${hasConsentForm})`,
+          `[Caption:Page] captionTracks 없음 (playerResponse=${hasPlayerResponse}, captions=${hasCaptions}, consent=${hasConsentForm})`
         );
         return null;
       }
@@ -415,7 +399,7 @@ export class CaptionExtractionService {
    */
   private async fetchCaptionFromTracks(
     tracks: Array<{ languageCode: string; baseUrl?: string }>,
-    label: string,
+    label: string
   ): Promise<{ caption: string | null; rateLimited: boolean }> {
     if (tracks.length === 0) {
       console.log(`[Caption:${label}] 트랙 0개`);
@@ -425,7 +409,7 @@ export class CaptionExtractionService {
     console.log(
       `[Caption:${label}] 트랙 ${tracks.length}개: ${tracks
         .map((t) => t.languageCode)
-        .join(", ")}`,
+        .join(", ")}`
     );
 
     const koTrack = tracks.find((t) => t.languageCode === "ko");
@@ -442,14 +426,14 @@ export class CaptionExtractionService {
     console.log(
       `[Caption:${label}] ${track.languageCode} 트랙 요청: ${trackUrl.substring(
         0,
-        100,
-      )}...`,
+        100
+      )}...`
     );
     const response = await this.fetchWithRetry(trackUrl);
     if (!response.ok) {
       const rateLimited = response.status === 429;
       console.log(
-        `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`,
+        `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`
       );
       return { caption: null, rateLimited };
     }
@@ -460,7 +444,7 @@ export class CaptionExtractionService {
     const caption = this.parseCaptionXml(text);
     if (!caption) {
       console.log(
-        `[Caption:${label}] XML 파싱 실패. 응답 시작: ${text.substring(0, 200)}`,
+        `[Caption:${label}] XML 파싱 실패. 응답 시작: ${text.substring(0, 200)}`
       );
     } else {
       console.log(`[Caption:${label}] 캡션 추출 성공: ${caption.length}자`);
@@ -479,8 +463,8 @@ export class CaptionExtractionService {
       return texts
         .map((t: string) =>
           this.decodeHtmlEntities(
-            t.replace(/<text[^>]*>/, "").replace(/<\/text>/, ""),
-          ),
+            t.replace(/<text[^>]*>/, "").replace(/<\/text>/, "")
+          )
         )
         .join(" ");
     }
@@ -495,13 +479,13 @@ export class CaptionExtractionService {
         if (sTags) {
           for (const s of sTags) {
             const text = this.decodeHtmlEntities(
-              s.replace(/<s[^>]*>/, "").replace(/<\/s>/, ""),
+              s.replace(/<s[^>]*>/, "").replace(/<\/s>/, "")
             ).trim();
             if (text) segments.push(text);
           }
         } else {
           const text = this.decodeHtmlEntities(
-            inner.replace(/<[^>]+>/g, ""),
+            inner.replace(/<[^>]+>/g, "")
           ).trim();
           if (text) segments.push(text);
         }
@@ -524,12 +508,12 @@ export class CaptionExtractionService {
   private fetchWithTimeout(
     url: string,
     options: RequestInit = {},
-    timeoutMs = 30_000,
+    timeoutMs = 30_000
   ): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-      clearTimeout(timer),
+      clearTimeout(timer)
     );
   }
 
@@ -543,7 +527,7 @@ export class CaptionExtractionService {
   private async fetchWithRetry(
     url: string,
     options: RequestInit = {},
-    maxRetries = 5,
+    maxRetries = 5
   ): Promise<Response> {
     const waitSeconds = [5, 15, 30, 45, 60];
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -555,184 +539,12 @@ export class CaptionExtractionService {
         console.log(
           `[Caption] 429 rate limit, ${waitSec}초 후 재시도 (${
             attempt + 1
-          }/${maxRetries})`,
+          }/${maxRetries})`
         );
         await this.delay(waitSec * 1000);
       }
     }
     // 마지막 시도도 429면 그대로 반환
     return this.fetchWithTimeout(url, options);
-  }
-
-  /**
-   * InnerTube ANDROID player API로 오디오 스트림 URL을 가져옵니다.
-   * adaptiveFormats에서 audio-only 중 최소 bitrate를 선택합니다.
-   */
-  private async fetchAudioStreamUrl(
-    videoId: string,
-  ): Promise<{ url: string; mimeType: string; contentLength: number } | null> {
-    const response = await this.fetchWithTimeout(
-      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoId,
-          context: {
-            client: {
-              clientName: "ANDROID",
-              clientVersion: "19.09.37",
-              androidSdkVersion: 30,
-              hl: "ko",
-              gl: "KR",
-            },
-          },
-        }),
-      },
-    );
-
-    if (!response.ok) {
-      console.log(
-        `[Caption:Audio] player API 실패: ${response.status} ${response.statusText}`,
-      );
-      return null;
-    }
-
-    const data = await response.json();
-    if (data.playabilityStatus?.status !== "OK") {
-      console.log(
-        `[Caption:Audio] 재생 불가: ${data.playabilityStatus?.status} (${data.playabilityStatus?.reason ?? ""})`,
-      );
-      return null;
-    }
-
-    const formats: Array<{
-      url?: string;
-      mimeType?: string;
-      bitrate?: number;
-      contentLength?: string;
-    }> = data.streamingData?.adaptiveFormats ?? [];
-
-    // audio-only + url 필드가 있는 포맷만 필터 (signatureCipher만 있는 건 스킵)
-    const audioFormats = formats.filter(
-      (f) => f.url && f.mimeType?.startsWith("audio/"),
-    );
-
-    if (audioFormats.length === 0) {
-      console.log("[Caption:Audio] audio 포맷 없음");
-      return null;
-    }
-
-    // 최소 bitrate 선택 (API 비용 절감)
-    audioFormats.sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
-    const selected = audioFormats[0];
-
-    // mimeType에서 base type 추출: "audio/mp4; codecs=\"mp4a.40.5\"" → "audio/mp4"
-    const baseMimeType = (selected.mimeType ?? "audio/mp4")
-      .split(";")[0]
-      .trim();
-
-    console.log(
-      `[Caption:Audio] 선택: ${baseMimeType}, ${selected.bitrate}bps, ${selected.contentLength ?? "?"}bytes`,
-    );
-
-    return {
-      url: selected.url!,
-      mimeType: baseMimeType,
-      contentLength: Number(selected.contentLength ?? 0),
-    };
-  }
-
-  /**
-   * Gemini Audio STT로 오디오를 변환하여 자막을 추출합니다 (최종 수단).
-   * InnerTube ANDROID player API로 오디오를 fetch하여 Gemini에 전달합니다.
-   */
-  private async getCaptionFromGeminiStt(
-    videoId: string,
-  ): Promise<string | null> {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.log("[Caption:Gemini] GEMINI_API_KEY 미설정 — 스킵");
-      return null;
-    }
-
-    try {
-      // InnerTube ANDROID player API로 오디오 URL 획득
-      console.log("[Caption:Gemini] InnerTube 오디오 URL 조회 중...");
-      const audioInfo = await this.fetchAudioStreamUrl(videoId);
-      if (!audioInfo) {
-        console.log("[Caption:Gemini] 오디오 URL 획득 실패");
-        return null;
-      }
-
-      // contentLength로 20MB 사전 체크
-      const MAX_SIZE = 20 * 1024 * 1024;
-      if (audioInfo.contentLength > MAX_SIZE) {
-        const sizeMb = (audioInfo.contentLength / (1024 * 1024)).toFixed(1);
-        console.log(`[Caption:Gemini] 오디오 ${sizeMb}MB — 20MB 초과 스킵`);
-        return null;
-      }
-
-      // fetch로 오디오 다운로드
-      console.log("[Caption:Gemini] 오디오 다운로드 중...");
-      const audioResponse = await this.fetchWithTimeout(
-        audioInfo.url,
-        {},
-        60_000,
-      );
-      if (!audioResponse.ok) {
-        console.log(
-          `[Caption:Gemini] 오디오 다운로드 실패: ${audioResponse.status}`,
-        );
-        return null;
-      }
-
-      const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
-      const sizeMb = (audioBuffer.length / (1024 * 1024)).toFixed(1);
-      console.log(`[Caption:Gemini] 오디오 크기: ${sizeMb}MB`);
-
-      if (audioBuffer.length > MAX_SIZE) {
-        console.log("[Caption:Gemini] 실제 크기 20MB 초과 — 스킵");
-        return null;
-      }
-
-      const base64Audio = audioBuffer.toString("base64");
-
-      // Gemini STT 호출
-      if (!this.genAI) {
-        this.genAI = new GoogleGenerativeAI(apiKey);
-      }
-
-      const model = this.genAI.getGenerativeModel({
-        model: "gemini-2.0-flash",
-      });
-
-      console.log("[Caption:Gemini] STT 요청 중...");
-      const result = await model.generateContent([
-        {
-          inlineData: {
-            mimeType: audioInfo.mimeType,
-            data: base64Audio,
-          },
-        },
-        {
-          text: "이 오디오의 내용을 그대로 텍스트로 변환해주세요. 말한 내용만 텍스트로 출력하고, 다른 설명이나 주석은 추가하지 마세요.",
-        },
-      ]);
-
-      const caption = result.response.text()?.trim();
-      if (!caption) {
-        console.log("[Caption:Gemini] 빈 응답");
-        return null;
-      }
-
-      console.log(`[Caption:Gemini] STT 성공: ${caption.length}자`);
-      return caption;
-    } catch (error) {
-      console.log(
-        `[Caption:Gemini] 에러: ${error instanceof Error ? error.message : error}`,
-      );
-      return null;
-    }
   }
 }
