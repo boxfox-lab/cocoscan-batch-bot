@@ -288,23 +288,56 @@ export class CocoscanYoutubeService {
    * 자막 트랙 목록에서 한국어 우선으로 자막 텍스트를 가져옵니다.
    */
   private async fetchCaptionFromTracks(
-    tracks: Array<{ languageCode: string; baseUrl?: string }>
+    tracks: Array<{ languageCode: string; baseUrl?: string }>,
+    label: string
   ): Promise<string | null> {
-    if (tracks.length === 0) return null;
+    if (tracks.length === 0) {
+      console.log(`[Caption:${label}] 트랙 0개`);
+      return null;
+    }
+
+    console.log(
+      `[Caption:${label}] 트랙 ${tracks.length}개: ${tracks
+        .map((t) => t.languageCode)
+        .join(", ")}`
+    );
 
     const koTrack = tracks.find((t) => t.languageCode === "ko");
     const track = koTrack || tracks[0];
-    if (!track?.baseUrl) return null;
+    if (!track?.baseUrl) {
+      console.log(`[Caption:${label}] baseUrl 없음`);
+      return null;
+    }
 
+    console.log(
+      `[Caption:${label}] ${
+        track.languageCode
+      } 트랙 요청: ${track.baseUrl.substring(0, 100)}...`
+    );
     const response = await this.fetchWithTimeout(track.baseUrl);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log(
+        `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`
+      );
+      return null;
+    }
 
-    return this.parseCaptionXml(await response.text());
+    const text = await response.text();
+    console.log(`[Caption:${label}] XML 응답 크기: ${text.length}자`);
+
+    const caption = this.parseCaptionXml(text);
+    if (!caption) {
+      console.log(
+        `[Caption:${label}] XML 파싱 실패. 응답 시작: ${text.substring(0, 200)}`
+      );
+    } else {
+      console.log(`[Caption:${label}] 캡션 추출 성공: ${caption.length}자`);
+    }
+    return caption;
   }
 
   /**
    * ANDROID 클라이언트로 InnerTube API를 호출하여 자막을 가져옵니다.
-   * WEB 클라이언트가 UNPLAYABLE을 반환하는 경우의 폴백
    */
   private async getCaptionFromAndroidClient(
     videoId: string
@@ -332,37 +365,146 @@ export class CocoscanYoutubeService {
 
       if (!response.ok) {
         console.log(
-          `[Cocoscan Youtube] ANDROID 클라이언트 응답 실패: ${response.status}`
+          `[Caption:ANDROID] HTTP 실패: ${response.status} ${response.statusText}`
         );
         return null;
       }
 
       const data = await response.json();
       const status = data.playabilityStatus?.status;
+      const reason = data.playabilityStatus?.reason;
       console.log(
-        `[Cocoscan Youtube] ANDROID 클라이언트 상태 (${videoId}): ${status}`
+        `[Caption:ANDROID] 상태: ${status}${reason ? ` (${reason})` : ""}`
       );
 
       if (status !== "OK") return null;
 
       const tracks =
         data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (!tracks || tracks.length === 0) {
+      return this.fetchCaptionFromTracks(tracks || [], "ANDROID");
+    } catch (error) {
+      console.error(`[Caption:ANDROID] 에러:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * InnerTube /next → /get_transcript 방식으로 자막을 가져옵니다.
+   * player 상태와 무관하게 transcript 패널에서 직접 추출
+   */
+  private async getCaptionFromTranscript(
+    videoId: string
+  ): Promise<string | null> {
+    try {
+      const innertube = {
+        key: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20250210.01.00",
+            hl: "ko",
+            gl: "KR",
+          },
+        },
+      };
+
+      // 1. /next로 engagement panel에서 transcript 토큰 추출
+      const nextResponse = await this.fetchWithTimeout(
+        `https://www.youtube.com/youtubei/v1/next?key=${innertube.key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            videoId,
+            context: innertube.context,
+          }),
+        }
+      );
+
+      if (!nextResponse.ok) {
+        console.log(`[Caption:Transcript] /next 실패: ${nextResponse.status}`);
+        return null;
+      }
+
+      const nextData = await nextResponse.json();
+      const panels =
+        nextData.engagementPanels ||
+        nextData.playerOverlays?.playerOverlayRenderer?.engagementPanels ||
+        [];
+
+      let continuationToken: string | null = null;
+
+      for (const panel of panels) {
+        const panelId =
+          panel.engagementPanelSectionListRenderer?.panelIdentifier;
+        if (panelId === "engagement-panel-searchable-transcript") {
+          const content =
+            panel.engagementPanelSectionListRenderer?.content
+              ?.continuationItemRenderer?.continuationEndpoint
+              ?.getTranscriptEndpoint?.params;
+          if (content) {
+            continuationToken = content;
+            break;
+          }
+        }
+      }
+
+      if (!continuationToken) {
+        console.log("[Caption:Transcript] transcript 토큰 없음");
+        return null;
+      }
+
+      // 2. /get_transcript로 실제 자막 텍스트 추출
+      const transcriptResponse = await this.fetchWithTimeout(
+        `https://www.youtube.com/youtubei/v1/get_transcript?key=${innertube.key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: innertube.context,
+            params: continuationToken,
+          }),
+        }
+      );
+
+      if (!transcriptResponse.ok) {
         console.log(
-          `[Cocoscan Youtube] ANDROID 클라이언트: captionTracks 없음 (${videoId})`
+          `[Caption:Transcript] /get_transcript 실패: ${transcriptResponse.status}`
         );
         return null;
       }
 
-      const caption = await this.fetchCaptionFromTracks(tracks);
-      if (caption) {
-        console.log(
-          `[Cocoscan Youtube] ANDROID 폴백으로 캡션 추출 성공 (${videoId}): ${caption.length}자`
-        );
+      const transcriptData = await transcriptResponse.json();
+      const body =
+        transcriptData.actions?.[0]?.updateEngagementPanelAction?.content
+          ?.transcriptRenderer?.body?.transcriptBodyRenderer;
+
+      if (!body) {
+        console.log("[Caption:Transcript] transcriptBody 없음");
+        return null;
       }
+
+      const segments: string[] = [];
+      for (const item of body.cueGroups || []) {
+        const cues = item.transcriptCueGroupRenderer?.cues || [];
+        for (const cue of cues) {
+          const text = cue.transcriptCueRenderer?.cue?.simpleText;
+          if (text) segments.push(text);
+        }
+      }
+
+      if (segments.length === 0) {
+        console.log("[Caption:Transcript] 세그먼트 0개");
+        return null;
+      }
+
+      const caption = segments.join(" ");
+      console.log(
+        `[Caption:Transcript] 추출 성공: ${caption.length}자 (${segments.length}개 세그먼트)`
+      );
       return caption;
     } catch (error) {
-      console.error(`ANDROID 폴백 캡션 추출 실패 (${videoId}):`, error);
+      console.error("[Caption:Transcript] 에러:", error);
       return null;
     }
   }
@@ -382,61 +524,84 @@ export class CocoscanYoutubeService {
         }
       );
 
-      if (!response.ok) return null;
+      if (!response.ok) {
+        console.log(`[Caption:Page] HTTP 실패: ${response.status}`);
+        return null;
+      }
 
       const html = await response.text();
+      console.log(`[Caption:Page] HTML 크기: ${html.length}자`);
+
       const match = html.match(/"captionTracks":(\[.*?\])/);
       if (!match) {
+        // 원인 진단 로그
+        const hasPlayerResponse = html.includes("playerResponse");
+        const hasCaptions = html.includes("captions");
+        const hasConsentForm = html.includes("consent.youtube.com");
         console.log(
-          `[Cocoscan Youtube] 페이지에서 captionTracks 없음 (${videoId})`
+          `[Caption:Page] captionTracks 없음 (playerResponse=${hasPlayerResponse}, captions=${hasCaptions}, consent=${hasConsentForm})`
         );
         return null;
       }
 
       const tracks = JSON.parse(match[1].replace(/\\u0026/g, "&"));
-      const caption = await this.fetchCaptionFromTracks(tracks);
-      if (caption) {
-        console.log(
-          `[Cocoscan Youtube] 페이지 폴백으로 캡션 추출 성공 (${videoId}): ${caption.length}자`
-        );
-      }
-      return caption;
+      return this.fetchCaptionFromTracks(tracks, "Page");
     } catch (error) {
-      console.error(`페이지 폴백 캡션 추출 실패 (${videoId}):`, error);
+      console.error("[Caption:Page] 에러:", error);
       return null;
     }
   }
 
   /**
    * 유튜브 영상의 자막(캡션)을 가져옵니다.
-   * 1차: youtube-caption-extractor (InnerTube WEB 클라이언트)
+   * 1차: youtube-caption-extractor (InnerTube WEB)
    * 2차: InnerTube ANDROID 클라이언트
-   * 3차: YouTube 페이지 스크래핑
+   * 3차: InnerTube /next → /get_transcript
+   * 4차: YouTube 페이지 스크래핑
    */
   private async getVideoCaption(videoId: string): Promise<string | null> {
+    console.log(`[Caption] === 자막 추출 시작: ${videoId} ===`);
+
     // 1차: youtube-caption-extractor (WEB)
     try {
+      console.log("[Caption] 1차: youtube-caption-extractor (WEB)");
       const koCaption = await getSubtitles({ videoID: videoId, lang: "ko" });
       if (koCaption && koCaption.length > 0) {
+        console.log(`[Caption] WEB ko 성공: ${koCaption.length}개 세그먼트`);
         return koCaption.map((c: any) => c.text || c).join(" ");
       }
+      console.log(`[Caption] WEB ko 결과: ${koCaption?.length ?? 0}개`);
 
       const enCaption = await getSubtitles({ videoID: videoId, lang: "en" });
       if (enCaption && enCaption.length > 0) {
+        console.log(`[Caption] WEB en 성공: ${enCaption.length}개 세그먼트`);
         return enCaption.map((c: any) => c.text || c).join(" ");
       }
+      console.log(`[Caption] WEB en 결과: ${enCaption?.length ?? 0}개`);
     } catch (error) {
-      console.log(`[Cocoscan Youtube] WEB 클라이언트 자막 실패 (${videoId})`);
+      console.log(
+        `[Caption] WEB 실패: ${error instanceof Error ? error.message : error}`
+      );
     }
 
     // 2차: ANDROID 클라이언트
-    console.log(`[Cocoscan Youtube] ANDROID 클라이언트 폴백 시도 (${videoId})`);
+    console.log("[Caption] 2차: ANDROID 클라이언트");
     const androidCaption = await this.getCaptionFromAndroidClient(videoId);
     if (androidCaption) return androidCaption;
 
-    // 3차: 페이지 스크래핑
-    console.log(`[Cocoscan Youtube] 페이지 스크래핑 폴백 시도 (${videoId})`);
-    return this.getCaptionFromPage(videoId);
+    // 3차: /next → /get_transcript
+    console.log("[Caption] 3차: /next → /get_transcript");
+    const transcriptCaption = await this.getCaptionFromTranscript(videoId);
+    if (transcriptCaption) return transcriptCaption;
+
+    // 4차: 페이지 스크래핑
+    console.log("[Caption] 4차: 페이지 스크래핑");
+    const pageCaption = await this.getCaptionFromPage(videoId);
+
+    if (!pageCaption) {
+      console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
+    }
+    return pageCaption;
   }
 
   /**
