@@ -223,13 +223,9 @@ export class ManualUrlProcessorService {
 
   private async findUnprocessedUrls(): Promise<YoutubeRequestEntity[]> {
     try {
+      // skipped/failed는 자동 재시도 안 함 (사용자가 pending으로 변경 시 재처리)
       return await this.youtubeRequestRepository.find({
-        where: [
-          { processStatus: "pending" },
-          { processStatus: "processing" },
-          { processStatus: "skipped" },
-          { processStatus: "failed" },
-        ],
+        where: [{ processStatus: "pending" }, { processStatus: "processing" }],
         order: { createdAt: "ASC" },
       });
     } catch (error) {
