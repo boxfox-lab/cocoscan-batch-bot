@@ -1,17 +1,9 @@
 import { getSubtitles } from "youtube-caption-extractor";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { readFile, unlink, access } from "fs/promises";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const execFileAsync = promisify(execFile);
 
 export class CaptionExtractionService {
   /** 서킷 브레이커: timedtext 429 발생 시 이번 배치에서 timedtext 스킵 */
   private timedtextBlocked = false;
-
-  /** yt-dlp 설치 여부 (1회 체크 후 캐싱) */
-  private ytdlpAvailable: boolean | null = null;
 
   /** Gemini AI 클라이언트 (lazy init) */
   private genAI: GoogleGenerativeAI | null = null;
@@ -23,30 +15,18 @@ export class CaptionExtractionService {
 
   /**
    * 유튜브 영상의 자막(캡션)을 가져옵니다.
-   * 1차: yt-dlp 자막 (자체 UA/쿠키로 429 우회 가능)
-   * 2차: youtube-caption-extractor (InnerTube WEB)
-   * 3차: InnerTube /next → /get_transcript (timedtext 미사용)
-   * 4차: ANDROID 클라이언트 (timedtext 사용, 서킷 브레이커 적용)
-   * 5차: YouTube 페이지 스크래핑 (timedtext 사용)
-   * 6차: Gemini Audio STT (자막 API 완전 우회, 최종 수단)
+   * 1차: youtube-caption-extractor (InnerTube WEB)
+   * 2차: InnerTube /next → /get_transcript (timedtext 미사용)
+   * 3차: ANDROID 클라이언트 (timedtext 사용, 서킷 브레이커 적용)
+   * 4차: YouTube 페이지 스크래핑 (timedtext 사용)
+   * 5차: Gemini Audio STT (InnerTube 오디오 → Gemini, 최종 수단)
    */
   async getVideoCaption(videoId: string): Promise<string | null> {
     console.log(`[Caption] === 자막 추출 시작: ${videoId} ===`);
 
-    // 1차: yt-dlp 자막
+    // 1차: youtube-caption-extractor (WEB)
     try {
-      console.log("[Caption] 1차: yt-dlp 자막");
-      const ytdlpCaption = await this.getCaptionFromYtdlp(videoId);
-      if (ytdlpCaption) return ytdlpCaption;
-    } catch (error) {
-      console.log(
-        `[Caption] yt-dlp 실패: ${error instanceof Error ? error.message : error}`,
-      );
-    }
-
-    // 2차: youtube-caption-extractor (WEB)
-    try {
-      console.log("[Caption] 2차: youtube-caption-extractor (WEB)");
+      console.log("[Caption] 1차: youtube-caption-extractor (WEB)");
       const koCaption = await getSubtitles({ videoID: videoId, lang: "ko" });
       if (koCaption && koCaption.length > 0) {
         console.log(`[Caption] WEB ko 성공: ${koCaption.length}개 세그먼트`);
@@ -66,19 +46,19 @@ export class CaptionExtractionService {
       );
     }
 
-    // 3차: /next → /get_transcript (timedtext 미사용, 429 우회)
-    console.log("[Caption] 3차: /next → /get_transcript");
+    // 2차: /next → /get_transcript (timedtext 미사용, 429 우회)
+    console.log("[Caption] 2차: /next → /get_transcript");
     const transcriptCaption = await this.getCaptionFromTranscript(videoId);
     if (transcriptCaption) return transcriptCaption;
 
-    // 서킷 브레이커: 이전 영상에서 timedtext 429 발생 시 4~5차 스킵
+    // 서킷 브레이커: 이전 영상에서 timedtext 429 발생 시 3~4차 스킵
     if (this.timedtextBlocked) {
       console.log(
-        "[Caption] 4~5차 스킵: timedtext 서킷 브레이커 (이전 429 발생)",
+        "[Caption] 3~4차 스킵: timedtext 서킷 브레이커 (이전 429 발생)",
       );
     } else {
-      // 4차: ANDROID 클라이언트 (timedtext 사용)
-      console.log("[Caption] 4차: ANDROID 클라이언트");
+      // 3차: ANDROID 클라이언트 (timedtext 사용)
+      console.log("[Caption] 3차: ANDROID 클라이언트");
       const androidResult = await this.getCaptionFromAndroidClient(videoId);
       if (androidResult.caption) return androidResult.caption;
 
@@ -88,16 +68,16 @@ export class CaptionExtractionService {
           "[Caption] timedtext 서킷 브레이커 활성화 — 이후 영상은 timedtext 스킵",
         );
       } else {
-        // 5차: 페이지 스크래핑 (timedtext 사용)
-        console.log("[Caption] 5차: 페이지 스크래핑");
+        // 4차: 페이지 스크래핑 (timedtext 사용)
+        console.log("[Caption] 4차: 페이지 스크래핑");
         const pageCaption = await this.getCaptionFromPage(videoId);
         if (pageCaption) return pageCaption;
       }
     }
 
-    // 6차: Gemini Audio STT (최종 수단, API 비용 발생)
+    // 5차: Gemini Audio STT (최종 수단, API 비용 발생)
     try {
-      console.log("[Caption] 6차: Gemini Audio STT");
+      console.log("[Caption] 5차: Gemini Audio STT");
       const geminiCaption = await this.getCaptionFromGeminiStt(videoId);
       if (geminiCaption) return geminiCaption;
     } catch (error) {
@@ -585,140 +565,87 @@ export class CaptionExtractionService {
   }
 
   /**
-   * yt-dlp CLI 설치 여부를 체크합니다 (결과 캐싱).
+   * InnerTube ANDROID player API로 오디오 스트림 URL을 가져옵니다.
+   * adaptiveFormats에서 audio-only 중 최소 bitrate를 선택합니다.
    */
-  private async checkYtdlpAvailable(): Promise<boolean> {
-    if (this.ytdlpAvailable !== null) return this.ytdlpAvailable;
+  private async fetchAudioStreamUrl(
+    videoId: string,
+  ): Promise<{ url: string; mimeType: string; contentLength: number } | null> {
+    const response = await this.fetchWithTimeout(
+      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId,
+          context: {
+            client: {
+              clientName: "ANDROID",
+              clientVersion: "19.09.37",
+              androidSdkVersion: 30,
+              hl: "ko",
+              gl: "KR",
+            },
+          },
+        }),
+      },
+    );
 
-    try {
-      await execFileAsync("yt-dlp", ["--version"]);
-      this.ytdlpAvailable = true;
-      console.log("[Caption:yt-dlp] yt-dlp 사용 가능");
-    } catch {
-      this.ytdlpAvailable = false;
-      console.log("[Caption:yt-dlp] yt-dlp 미설치 — 스킵");
-    }
-    return this.ytdlpAvailable;
-  }
-
-  /**
-   * yt-dlp CLI로 자막 파일을 다운로드하여 텍스트를 추출합니다.
-   */
-  private async getCaptionFromYtdlp(videoId: string): Promise<string | null> {
-    if (!(await this.checkYtdlpAvailable())) return null;
-
-    const timestamp = Date.now();
-    const basePath = `/tmp/cocoscan_caption_${videoId}_${timestamp}`;
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
-
-    try {
-      await execFileAsync(
-        "yt-dlp",
-        [
-          "--write-sub",
-          "--write-auto-sub",
-          "--sub-lang",
-          "ko,en",
-          "--skip-download",
-          "--sub-format",
-          "srv1",
-          "-o",
-          basePath,
-          url,
-        ],
-        { timeout: 60_000 },
-      );
-
-      const caption = await this.readYtdlpSubtitleFile(basePath, videoId);
-      return caption;
-    } catch (error) {
+    if (!response.ok) {
       console.log(
-        `[Caption:yt-dlp] 에러: ${error instanceof Error ? error.message : error}`,
+        `[Caption:Audio] player API 실패: ${response.status} ${response.statusText}`,
       );
       return null;
-    } finally {
-      await this.cleanupTempFiles(basePath, videoId);
-    }
-  }
-
-  /**
-   * yt-dlp가 다운로드한 자막 파일을 찾아 파싱합니다.
-   * srv1 → parseCaptionXml, vtt → parseVttContent
-   */
-  private async readYtdlpSubtitleFile(
-    basePath: string,
-    videoId: string,
-  ): Promise<string | null> {
-    const langPriority = ["ko", "en"];
-    const formatPriority = ["srv1", "vtt"];
-
-    for (const lang of langPriority) {
-      for (const fmt of formatPriority) {
-        const filePath = `${basePath}.${lang}.${fmt}`;
-        try {
-          await access(filePath);
-          const content = await readFile(filePath, "utf-8");
-
-          if (!content.trim()) continue;
-
-          const caption =
-            fmt === "srv1"
-              ? this.parseCaptionXml(content)
-              : this.parseVttContent(content);
-
-          if (caption) {
-            console.log(
-              `[Caption:yt-dlp] ${lang}.${fmt} 성공: ${caption.length}자`,
-            );
-            return caption;
-          }
-        } catch {
-          // 파일 없음 → 다음 시도
-        }
-      }
     }
 
-    console.log(`[Caption:yt-dlp] 자막 파일 없음: ${videoId}`);
-    return null;
-  }
-
-  /**
-   * WebVTT 형식의 자막을 파싱합니다.
-   */
-  private parseVttContent(vtt: string): string | null {
-    const lines = vtt.split("\n");
-    const segments: string[] = [];
-    const seen = new Set<string>();
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      // 헤더, 빈 줄, 타임스탬프 라인 스킵
-      if (!trimmed) continue;
-      if (trimmed === "WEBVTT") continue;
-      if (trimmed.startsWith("Kind:")) continue;
-      if (trimmed.startsWith("Language:")) continue;
-      if (trimmed.startsWith("NOTE")) continue;
-      if (/^\d+$/.test(trimmed)) continue;
-      if (/-->/.test(trimmed)) continue;
-
-      // HTML 태그 제거 + 디코딩
-      const text = this.decodeHtmlEntities(
-        trimmed.replace(/<[^>]+>/g, ""),
-      ).trim();
-
-      if (text && !seen.has(text)) {
-        seen.add(text);
-        segments.push(text);
-      }
+    const data = await response.json();
+    if (data.playabilityStatus?.status !== "OK") {
+      console.log(
+        `[Caption:Audio] 재생 불가: ${data.playabilityStatus?.status} (${data.playabilityStatus?.reason ?? ""})`,
+      );
+      return null;
     }
 
-    if (segments.length === 0) return null;
-    return segments.join(" ");
+    const formats: Array<{
+      url?: string;
+      mimeType?: string;
+      bitrate?: number;
+      contentLength?: string;
+    }> = data.streamingData?.adaptiveFormats ?? [];
+
+    // audio-only + url 필드가 있는 포맷만 필터 (signatureCipher만 있는 건 스킵)
+    const audioFormats = formats.filter(
+      (f) => f.url && f.mimeType?.startsWith("audio/"),
+    );
+
+    if (audioFormats.length === 0) {
+      console.log("[Caption:Audio] audio 포맷 없음");
+      return null;
+    }
+
+    // 최소 bitrate 선택 (API 비용 절감)
+    audioFormats.sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
+    const selected = audioFormats[0];
+
+    // mimeType에서 base type 추출: "audio/mp4; codecs=\"mp4a.40.5\"" → "audio/mp4"
+    const baseMimeType = (selected.mimeType ?? "audio/mp4")
+      .split(";")[0]
+      .trim();
+
+    console.log(
+      `[Caption:Audio] 선택: ${baseMimeType}, ${selected.bitrate}bps, ${selected.contentLength ?? "?"}bytes`,
+    );
+
+    return {
+      url: selected.url!,
+      mimeType: baseMimeType,
+      contentLength: Number(selected.contentLength ?? 0),
+    };
   }
 
   /**
    * Gemini Audio STT로 오디오를 변환하여 자막을 추출합니다 (최종 수단).
+   * InnerTube ANDROID player API로 오디오를 fetch하여 Gemini에 전달합니다.
    */
   private async getCaptionFromGeminiStt(
     videoId: string,
@@ -729,51 +656,52 @@ export class CaptionExtractionService {
       return null;
     }
 
-    if (!(await this.checkYtdlpAvailable())) {
-      console.log("[Caption:Gemini] yt-dlp 미설치 — 오디오 다운로드 불가");
-      return null;
-    }
-
-    const timestamp = Date.now();
-    const audioPath = `/tmp/cocoscan_audio_${videoId}_${timestamp}.mp3`;
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
-
     try {
-      // 오디오 다운로드 (최저 품질)
-      console.log("[Caption:Gemini] 오디오 다운로드 중...");
-      await execFileAsync(
-        "yt-dlp",
-        [
-          "-x",
-          "--audio-format",
-          "mp3",
-          "--audio-quality",
-          "9",
-          "-o",
-          audioPath,
-          url,
-        ],
-        { timeout: 120_000 },
-      );
-
-      // 파일 크기 체크 (20MB 초과 시 스킵)
-      const { stat } = await import("fs/promises");
-      const fileStat = await stat(audioPath);
-      const sizeMb = fileStat.size / (1024 * 1024);
-      console.log(`[Caption:Gemini] 오디오 크기: ${sizeMb.toFixed(1)}MB`);
-
-      if (sizeMb > 20) {
-        console.log("[Caption:Gemini] 20MB 초과 — 스킵");
+      // InnerTube ANDROID player API로 오디오 URL 획득
+      console.log("[Caption:Gemini] InnerTube 오디오 URL 조회 중...");
+      const audioInfo = await this.fetchAudioStreamUrl(videoId);
+      if (!audioInfo) {
+        console.log("[Caption:Gemini] 오디오 URL 획득 실패");
         return null;
       }
+
+      // contentLength로 20MB 사전 체크
+      const MAX_SIZE = 20 * 1024 * 1024;
+      if (audioInfo.contentLength > MAX_SIZE) {
+        const sizeMb = (audioInfo.contentLength / (1024 * 1024)).toFixed(1);
+        console.log(`[Caption:Gemini] 오디오 ${sizeMb}MB — 20MB 초과 스킵`);
+        return null;
+      }
+
+      // fetch로 오디오 다운로드
+      console.log("[Caption:Gemini] 오디오 다운로드 중...");
+      const audioResponse = await this.fetchWithTimeout(
+        audioInfo.url,
+        {},
+        60_000,
+      );
+      if (!audioResponse.ok) {
+        console.log(
+          `[Caption:Gemini] 오디오 다운로드 실패: ${audioResponse.status}`,
+        );
+        return null;
+      }
+
+      const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+      const sizeMb = (audioBuffer.length / (1024 * 1024)).toFixed(1);
+      console.log(`[Caption:Gemini] 오디오 크기: ${sizeMb}MB`);
+
+      if (audioBuffer.length > MAX_SIZE) {
+        console.log("[Caption:Gemini] 실제 크기 20MB 초과 — 스킵");
+        return null;
+      }
+
+      const base64Audio = audioBuffer.toString("base64");
 
       // Gemini STT 호출
       if (!this.genAI) {
         this.genAI = new GoogleGenerativeAI(apiKey);
       }
-
-      const audioData = await readFile(audioPath);
-      const base64Audio = audioData.toString("base64");
 
       const model = this.genAI.getGenerativeModel({
         model: "gemini-2.0-flash",
@@ -783,7 +711,7 @@ export class CaptionExtractionService {
       const result = await model.generateContent([
         {
           inlineData: {
-            mimeType: "audio/mp3",
+            mimeType: audioInfo.mimeType,
             data: base64Audio,
           },
         },
@@ -805,42 +733,6 @@ export class CaptionExtractionService {
         `[Caption:Gemini] 에러: ${error instanceof Error ? error.message : error}`,
       );
       return null;
-    } finally {
-      try {
-        await unlink(audioPath);
-      } catch {
-        // 정리 실패 무시
-      }
-    }
-  }
-
-  /**
-   * yt-dlp가 생성한 임시 자막 파일들을 정리합니다.
-   */
-  private async cleanupTempFiles(
-    basePath: string,
-    videoId: string,
-  ): Promise<void> {
-    const extensions = [
-      "ko.srv1",
-      "en.srv1",
-      "ko.vtt",
-      "en.vtt",
-      "ko.srt",
-      "en.srt",
-    ];
-    for (const ext of extensions) {
-      try {
-        await unlink(`${basePath}.${ext}`);
-      } catch {
-        // 파일 없음 무시
-      }
-    }
-    // yt-dlp가 생성할 수 있는 메타 파일 정리
-    try {
-      await unlink(`${basePath}.temp`);
-    } catch {
-      // 무시
     }
   }
 }
