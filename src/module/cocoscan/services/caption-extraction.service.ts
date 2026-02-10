@@ -40,17 +40,23 @@ export class CaptionExtractionService {
 
     // 3차: ANDROID 클라이언트 (timedtext 사용)
     console.log("[Caption] 3차: ANDROID 클라이언트");
-    const androidCaption = await this.getCaptionFromAndroidClient(videoId);
-    if (androidCaption) return androidCaption;
+    const androidResult = await this.getCaptionFromAndroidClient(videoId);
+    if (androidResult.caption) return androidResult.caption;
 
     // 4차: 페이지 스크래핑 (timedtext 사용)
-    console.log("[Caption] 4차: 페이지 스크래핑");
-    const pageCaption = await this.getCaptionFromPage(videoId);
-
-    if (!pageCaption) {
-      console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
+    // ANDROID가 429면 같은 timedtext 엔드포인트이므로 Page도 429 → 스킵
+    if (androidResult.rateLimited) {
+      console.log(
+        "[Caption] 4차 스킵: timedtext 429 (ANDROID와 동일 엔드포인트)"
+      );
+    } else {
+      console.log("[Caption] 4차: 페이지 스크래핑");
+      const pageCaption = await this.getCaptionFromPage(videoId);
+      if (pageCaption) return pageCaption;
     }
-    return pageCaption;
+
+    console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
+    return null;
   }
 
   /**
@@ -58,7 +64,7 @@ export class CaptionExtractionService {
    */
   private async getCaptionFromAndroidClient(
     videoId: string
-  ): Promise<string | null> {
+  ): Promise<{ caption: string | null; rateLimited: boolean }> {
     try {
       const response = await this.fetchWithTimeout(
         "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
@@ -84,7 +90,7 @@ export class CaptionExtractionService {
         console.log(
           `[Caption:ANDROID] HTTP 실패: ${response.status} ${response.statusText}`
         );
-        return null;
+        return { caption: null, rateLimited: false };
       }
 
       const data = await response.json();
@@ -94,14 +100,18 @@ export class CaptionExtractionService {
         `[Caption:ANDROID] 상태: ${status}${reason ? ` (${reason})` : ""}`
       );
 
-      if (status !== "OK") return null;
+      if (status !== "OK") return { caption: null, rateLimited: false };
 
       const tracks =
         data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      return this.fetchCaptionFromTracks(tracks || [], "ANDROID");
+      const result = await this.fetchCaptionFromTracks(tracks || [], "ANDROID");
+      return {
+        caption: result.caption,
+        rateLimited: result.rateLimited,
+      };
     } catch (error) {
       console.error(`[Caption:ANDROID] 에러:`, error);
-      return null;
+      return { caption: null, rateLimited: false };
     }
   }
 
@@ -361,7 +371,8 @@ export class CaptionExtractionService {
       }
 
       const tracks = JSON.parse(match[1].replace(/\\u0026/g, "&"));
-      return this.fetchCaptionFromTracks(tracks, "Page");
+      const result = await this.fetchCaptionFromTracks(tracks, "Page");
+      return result.caption;
     } catch (error) {
       console.error("[Caption:Page] 에러:", error);
       return null;
@@ -374,10 +385,10 @@ export class CaptionExtractionService {
   private async fetchCaptionFromTracks(
     tracks: Array<{ languageCode: string; baseUrl?: string }>,
     label: string
-  ): Promise<string | null> {
+  ): Promise<{ caption: string | null; rateLimited: boolean }> {
     if (tracks.length === 0) {
       console.log(`[Caption:${label}] 트랙 0개`);
-      return null;
+      return { caption: null, rateLimited: false };
     }
 
     console.log(
@@ -390,7 +401,7 @@ export class CaptionExtractionService {
     const track = koTrack || tracks[0];
     if (!track?.baseUrl) {
       console.log(`[Caption:${label}] baseUrl 없음`);
-      return null;
+      return { caption: null, rateLimited: false };
     }
 
     // fmt=srv1로 format 1 (단순 <text> 태그) 요청
@@ -405,10 +416,11 @@ export class CaptionExtractionService {
     );
     const response = await this.fetchWithRetry(trackUrl);
     if (!response.ok) {
+      const rateLimited = response.status === 429;
       console.log(
         `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`
       );
-      return null;
+      return { caption: null, rateLimited };
     }
 
     const text = await response.text();
@@ -422,7 +434,7 @@ export class CaptionExtractionService {
     } else {
       console.log(`[Caption:${label}] 캡션 추출 성공: ${caption.length}자`);
     }
-    return caption;
+    return { caption, rateLimited: false };
   }
 
   /**
