@@ -263,6 +263,36 @@ export class CocoscanYoutubeService {
     );
   }
 
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 429 대응: 재시도 + 지수 백오프
+   */
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit = {},
+    maxRetries = 3
+  ): Promise<Response> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await this.fetchWithTimeout(url, options);
+      if (response.status !== 429) return response;
+
+      if (attempt < maxRetries) {
+        const waitSec = Math.pow(2, attempt + 1); // 2, 4, 8초
+        console.log(
+          `[Caption] 429 rate limit, ${waitSec}초 후 재시도 (${
+            attempt + 1
+          }/${maxRetries})`
+        );
+        await this.delay(waitSec * 1000);
+      }
+    }
+    // 마지막 시도도 429면 그대로 반환
+    return this.fetchWithTimeout(url, options);
+  }
+
   /**
    * XML 자막 텍스트를 파싱하여 문자열로 반환합니다.
    */
@@ -314,7 +344,7 @@ export class CocoscanYoutubeService {
         track.languageCode
       } 트랙 요청: ${track.baseUrl.substring(0, 100)}...`
     );
-    const response = await this.fetchWithTimeout(track.baseUrl);
+    const response = await this.fetchWithRetry(track.baseUrl);
     if (!response.ok) {
       console.log(
         `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`
@@ -978,7 +1008,11 @@ export class CocoscanYoutubeService {
     let successCount = 0;
     let failCount = 0;
 
-    for (const request of requests) {
+    for (let i = 0; i < requests.length; i++) {
+      const request = requests[i];
+      // 429 방지: 요청 간 3초 딜레이
+      if (i > 0) await this.delay(3000);
+
       try {
         await this.processManualRequest(request);
         successCount++;
