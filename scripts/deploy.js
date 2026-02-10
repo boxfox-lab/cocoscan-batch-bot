@@ -143,10 +143,23 @@ function main() {
         `npx pm2 reload ecosystem.config.js --only "${APP_NAME}" --update-env`
       );
       log("✅ PM2 reload 완료");
+
+      // reload 후 상태 확인 — 프로세스 ID가 stale하면 reload가 실패할 수 있음
+      const afterReloadStatus = getPm2Status();
+      if (afterReloadStatus !== "online") {
+        log("⚠️  reload 후 상태 비정상 — delete 후 재시작합니다.");
+        try {
+          exec(`npx pm2 delete "${APP_NAME}"`);
+        } catch (_) {}
+        exec(`npx pm2 start ecosystem.config.js --only "${APP_NAME}"`);
+        log("✅ PM2 재시작 완료");
+      }
     } else {
-      if (pm2Status === "stopped") {
-        log("⚠️  PM2 프로세스가 stopped 상태입니다. 삭제 후 재시작합니다.");
-        exec(`npx pm2 delete "${APP_NAME}"`);
+      if (pm2Status !== "not_found") {
+        log(`⚠️  PM2 프로세스 상태: ${pm2Status}. 삭제 후 재시작합니다.`);
+        try {
+          exec(`npx pm2 delete "${APP_NAME}"`);
+        } catch (_) {}
       }
       log("🚀 PM2 start 실행 중...");
       exec(`npx pm2 start ecosystem.config.js --only "${APP_NAME}"`);
