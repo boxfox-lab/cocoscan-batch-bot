@@ -419,34 +419,70 @@ export class CocoscanYoutubeService {
   }
 
   /**
+   * InnerTube 세션 데이터 생성 (라이브러리 동일 방식)
+   */
+  private generateInnerTubeSession() {
+    const chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let visitorData = "";
+    for (let i = 0; i < 11; i++) {
+      visitorData += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    const key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+    const clientVersion = "2.20250222.10.00";
+
+    return {
+      key,
+      visitorData,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "*/*",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "X-Youtube-Client-Version": clientVersion,
+        "X-Youtube-Client-Name": "1",
+        "X-Goog-Visitor-Id": visitorData,
+        Origin: "https://www.youtube.com",
+        Referer: "https://www.youtube.com/",
+      },
+      payload: {
+        context: {
+          client: {
+            hl: "ko",
+            gl: "KR",
+            clientName: "WEB",
+            clientVersion,
+            visitorData,
+          },
+          user: { enableSafetyMode: false },
+          request: { useSsl: true },
+        },
+        visitorData,
+      },
+    };
+  }
+
+  /**
    * InnerTube /next → /get_transcript 방식으로 자막을 가져옵니다.
-   * player 상태와 무관하게 transcript 패널에서 직접 추출
+   * timedtext URL을 거치지 않아 429 rate limit을 우회합니다.
    */
   private async getCaptionFromTranscript(
     videoId: string
   ): Promise<string | null> {
     try {
-      const innertube = {
-        key: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-        context: {
-          client: {
-            clientName: "WEB",
-            clientVersion: "2.20250210.01.00",
-            hl: "ko",
-            gl: "KR",
-          },
-        },
-      };
+      const session = this.generateInnerTubeSession();
+      const baseUrl = "https://www.youtube.com/youtubei/v1";
 
       // 1. /next로 engagement panel에서 transcript 토큰 추출
       const nextResponse = await this.fetchWithTimeout(
-        `https://www.youtube.com/youtubei/v1/next?key=${innertube.key}`,
+        `${baseUrl}/next?key=${session.key}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: session.headers,
           body: JSON.stringify({
+            ...session.payload,
             videoId,
-            context: innertube.context,
           }),
         }
       );
@@ -457,42 +493,81 @@ export class CocoscanYoutubeService {
       }
 
       const nextData = await nextResponse.json();
-      const panels =
-        nextData.engagementPanels ||
-        nextData.playerOverlays?.playerOverlayRenderer?.engagementPanels ||
-        [];
+      const panels = nextData.engagementPanels || [];
+      console.log(`[Caption:Transcript] engagement panels: ${panels.length}개`);
 
-      let continuationToken: string | null = null;
+      // transcript 패널에서 continuation 토큰 추출 (3가지 방법)
+      let token: string | null = null;
 
-      for (const panel of panels) {
-        const panelId =
-          panel.engagementPanelSectionListRenderer?.panelIdentifier;
-        if (panelId === "engagement-panel-searchable-transcript") {
-          const content =
-            panel.engagementPanelSectionListRenderer?.content
-              ?.continuationItemRenderer?.continuationEndpoint
-              ?.getTranscriptEndpoint?.params;
-          if (content) {
-            continuationToken = content;
-            break;
+      const transcriptPanel = panels.find(
+        (p: any) =>
+          p?.engagementPanelSectionListRenderer?.panelIdentifier ===
+          "engagement-panel-searchable-transcript"
+      );
+
+      if (!transcriptPanel) {
+        console.log("[Caption:Transcript] transcript 패널 없음");
+        return null;
+      }
+
+      const content =
+        transcriptPanel.engagementPanelSectionListRenderer?.content;
+
+      // Method 1: continuationCommand.token
+      const ci1 = content?.continuationItemRenderer;
+      if (ci1?.continuationEndpoint?.continuationCommand?.token) {
+        token = ci1.continuationEndpoint.continuationCommand.token;
+        console.log("[Caption:Transcript] 토큰 방법 1: continuationCommand");
+      }
+
+      // Method 2: getTranscriptEndpoint.params
+      if (!token && ci1?.continuationEndpoint?.getTranscriptEndpoint?.params) {
+        token = ci1.continuationEndpoint.getTranscriptEndpoint.params;
+        console.log("[Caption:Transcript] 토큰 방법 2: getTranscriptEndpoint");
+      }
+
+      // Method 3: sectionListRenderer
+      if (!token && content?.sectionListRenderer?.contents?.[0]) {
+        const ci2 =
+          content.sectionListRenderer.contents[0].continuationItemRenderer;
+        if (ci2?.continuationEndpoint?.continuationCommand?.token) {
+          token = ci2.continuationEndpoint.continuationCommand.token;
+          console.log("[Caption:Transcript] 토큰 방법 3: sectionListRenderer");
+        }
+      }
+
+      // Method 4: transcriptRenderer footer language menu
+      if (!token && content?.sectionListRenderer?.contents) {
+        for (const item of content.sectionListRenderer.contents) {
+          const menuItems =
+            item?.transcriptRenderer?.footer?.transcriptFooterRenderer
+              ?.languageMenu?.sortFilterSubMenuRenderer?.subMenuItems;
+          if (menuItems) {
+            const selected =
+              menuItems.find((m: any) => m?.selected === true) || menuItems[0];
+            if (selected?.continuation?.reloadContinuationData?.continuation) {
+              token = selected.continuation.reloadContinuationData.continuation;
+              console.log("[Caption:Transcript] 토큰 방법 4: languageMenu");
+              break;
+            }
           }
         }
       }
 
-      if (!continuationToken) {
-        console.log("[Caption:Transcript] transcript 토큰 없음");
+      if (!token) {
+        console.log("[Caption:Transcript] 토큰 추출 실패");
         return null;
       }
 
-      // 2. /get_transcript로 실제 자막 텍스트 추출
+      // 2. /get_transcript로 자막 텍스트 직접 추출
       const transcriptResponse = await this.fetchWithTimeout(
-        `https://www.youtube.com/youtubei/v1/get_transcript?key=${innertube.key}`,
+        `${baseUrl}/get_transcript?key=${session.key}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: session.headers,
           body: JSON.stringify({
-            context: innertube.context,
-            params: continuationToken,
+            ...session.payload,
+            params: token,
           }),
         }
       );
@@ -505,22 +580,33 @@ export class CocoscanYoutubeService {
       }
 
       const transcriptData = await transcriptResponse.json();
-      const body =
-        transcriptData.actions?.[0]?.updateEngagementPanelAction?.content
-          ?.transcriptRenderer?.body?.transcriptBodyRenderer;
 
-      if (!body) {
-        console.log("[Caption:Transcript] transcriptBody 없음");
+      // 응답에서 세그먼트 추출
+      const initialSegments =
+        transcriptData?.actions?.[0]?.updateEngagementPanelAction?.content
+          ?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body
+          ?.transcriptSegmentListRenderer?.initialSegments;
+
+      if (!initialSegments || !Array.isArray(initialSegments)) {
+        console.log(
+          "[Caption:Transcript] initialSegments 없음. 응답 키:",
+          JSON.stringify(Object.keys(transcriptData)).substring(0, 200)
+        );
         return null;
       }
 
       const segments: string[] = [];
-      for (const item of body.cueGroups || []) {
-        const cues = item.transcriptCueGroupRenderer?.cues || [];
-        for (const cue of cues) {
-          const text = cue.transcriptCueRenderer?.cue?.simpleText;
-          if (text) segments.push(text);
+      for (const seg of initialSegments) {
+        const renderer = seg.transcriptSegmentRenderer;
+        if (!renderer) continue;
+
+        let text = "";
+        if (renderer.snippet?.simpleText) {
+          text = renderer.snippet.simpleText;
+        } else if (renderer.snippet?.runs) {
+          text = renderer.snippet.runs.map((r: any) => r.text).join("");
         }
+        if (text.trim()) segments.push(text.trim());
       }
 
       if (segments.length === 0) {
