@@ -95,6 +95,9 @@ export class CocoscanYoutubeService {
     let totalErrors = 0;
 
     try {
+      // 배치 시작 시 서킷 브레이커 초기화
+      this.captionService.resetCircuitBreaker();
+
       // 1. 수동 등록 URL 처리 (먼저 처리)
       await this.manualUrlProcessor.processAll();
 

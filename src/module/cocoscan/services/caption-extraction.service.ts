@@ -1,12 +1,20 @@
 import { getSubtitles } from "youtube-caption-extractor";
 
 export class CaptionExtractionService {
+  /** 서킷 브레이커: timedtext 429 발생 시 이번 배치에서 timedtext 스킵 */
+  private timedtextBlocked = false;
+
+  /** 배치 시작 시 서킷 브레이커 초기화 */
+  resetCircuitBreaker(): void {
+    this.timedtextBlocked = false;
+  }
+
   /**
    * 유튜브 영상의 자막(캡션)을 가져옵니다.
    * 1차: youtube-caption-extractor (InnerTube WEB)
-   * 2차: InnerTube ANDROID 클라이언트
-   * 3차: InnerTube /next → /get_transcript
-   * 4차: YouTube 페이지 스크래핑
+   * 2차: InnerTube /next → /get_transcript (timedtext 미사용)
+   * 3차: ANDROID 클라이언트 (timedtext 사용, 서킷 브레이커 적용)
+   * 4차: YouTube 페이지 스크래핑 (timedtext 사용)
    */
   async getVideoCaption(videoId: string): Promise<string | null> {
     console.log(`[Caption] === 자막 추출 시작: ${videoId} ===`);
@@ -38,18 +46,28 @@ export class CaptionExtractionService {
     const transcriptCaption = await this.getCaptionFromTranscript(videoId);
     if (transcriptCaption) return transcriptCaption;
 
+    // 서킷 브레이커: 이전 영상에서 timedtext 429 발생 시 3~4차 스킵
+    if (this.timedtextBlocked) {
+      console.log(
+        "[Caption] 3~4차 스킵: timedtext 서킷 브레이커 (이전 429 발생)"
+      );
+      console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
+      return null;
+    }
+
     // 3차: ANDROID 클라이언트 (timedtext 사용)
     console.log("[Caption] 3차: ANDROID 클라이언트");
     const androidResult = await this.getCaptionFromAndroidClient(videoId);
     if (androidResult.caption) return androidResult.caption;
 
-    // 4차: 페이지 스크래핑 (timedtext 사용)
-    // ANDROID가 429면 같은 timedtext 엔드포인트이므로 Page도 429 → 스킵
     if (androidResult.rateLimited) {
+      // timedtext 429 → 서킷 브레이커 활성화 + 4차 스킵
+      this.timedtextBlocked = true;
       console.log(
-        "[Caption] 4차 스킵: timedtext 429 (ANDROID와 동일 엔드포인트)"
+        "[Caption] timedtext 서킷 브레이커 활성화 — 이후 영상은 timedtext 스킵"
       );
     } else {
+      // 4차: 페이지 스크래핑 (timedtext 사용)
       console.log("[Caption] 4차: 페이지 스크래핑");
       const pageCaption = await this.getCaptionFromPage(videoId);
       if (pageCaption) return pageCaption;
