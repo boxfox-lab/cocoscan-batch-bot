@@ -251,6 +251,18 @@ export class CocoscanYoutubeService {
     );
   }
 
+  private fetchWithTimeout(
+    url: string,
+    options: RequestInit = {},
+    timeoutMs = 30_000
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+      clearTimeout(timer)
+    );
+  }
+
   /**
    * XML 자막 텍스트를 파싱하여 문자열로 반환합니다.
    */
@@ -284,7 +296,7 @@ export class CocoscanYoutubeService {
     const track = koTrack || tracks[0];
     if (!track?.baseUrl) return null;
 
-    const response = await fetch(track.baseUrl);
+    const response = await this.fetchWithTimeout(track.baseUrl);
     if (!response.ok) return null;
 
     return this.parseCaptionXml(await response.text());
@@ -298,7 +310,7 @@ export class CocoscanYoutubeService {
     videoId: string
   ): Promise<string | null> {
     try {
-      const response = await fetch(
+      const response = await this.fetchWithTimeout(
         "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
         {
           method: "POST",
@@ -360,7 +372,7 @@ export class CocoscanYoutubeService {
    */
   private async getCaptionFromPage(videoId: string): Promise<string | null> {
     try {
-      const response = await fetch(
+      const response = await this.fetchWithTimeout(
         `https://www.youtube.com/watch?v=${videoId}`,
         {
           headers: {
@@ -601,6 +613,7 @@ export class CocoscanYoutubeService {
       const unprocessed = await this.youtubeRequestRepository.find({
         where: [
           { processStatus: "pending" },
+          { processStatus: "processing" },
           { processStatus: "skipped" },
           { processStatus: "failed" },
         ],
