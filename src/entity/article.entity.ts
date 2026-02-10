@@ -16,8 +16,8 @@ export class ArticleEntity {
   id: string;
 
   @Index()
-  @Column({ type: "text", name: "youtube_link", nullable: true })
-  youtubeLink: string | null;
+  @Column({ type: "text", name: "youtube_link" })
+  youtubeLink: string;
 
   @ManyToOne(() => YoutubeEntity, (youtube) => youtube.articles, {
     onDelete: "CASCADE",
@@ -40,9 +40,6 @@ export class ArticleEntity {
 
   @Column({ type: "text", nullable: true })
   summary: string;
-
-  @Column({ type: "text", nullable: true })
-  thumbnail: string;
 
   @Column({ type: "json", nullable: true })
   keywords: string[];
