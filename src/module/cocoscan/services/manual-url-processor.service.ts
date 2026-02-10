@@ -28,7 +28,7 @@ export class ManualUrlProcessorService {
 
   constructor(
     captionService: CaptionExtractionService,
-    articleService: ArticlePersistenceService,
+    articleService: ArticlePersistenceService
   ) {
     this.captionService = captionService;
     this.articleService = articleService;
@@ -51,10 +51,10 @@ export class ManualUrlProcessorService {
     }
 
     console.log(
-      `[ManualUrlProcessor] ${requests.length}개 수동 URL 처리 중...`,
+      `[ManualUrlProcessor] ${requests.length}개 수동 URL 처리 중...`
     );
     await this.sendNotification(
-      `수동 URL 처리 시작\n**처리 대상:** ${requests.length}개`,
+      `수동 URL 처리 시작\n**처리 대상:** ${requests.length}개`
     );
 
     let successCount = 0;
@@ -62,8 +62,11 @@ export class ManualUrlProcessorService {
 
     for (let i = 0; i < requests.length; i++) {
       const request = requests[i];
-      // 429 방지: 요청 간 3초 딜레이
-      if (i > 0) await this.delay(3000);
+      // 429 방지: 요청 간 10초 딜레이
+      if (i > 0) {
+        console.log("[ManualUrlProcessor] 10초 대기 (429 방지)");
+        await this.delay(10_000);
+      }
 
       try {
         await this.processRequest(request);
@@ -75,16 +78,16 @@ export class ManualUrlProcessorService {
           `수동 URL 처리 실패\n**URL:** ${request.link}\n**에러:** ${
             error instanceof Error ? error.message : String(error)
           }`,
-          true,
+          true
         );
       }
     }
 
     console.log(
-      `[ManualUrlProcessor] 수동 URL 처리 완료 (성공: ${successCount}, 실패: ${failCount})`,
+      `[ManualUrlProcessor] 수동 URL 처리 완료 (성공: ${successCount}, 실패: ${failCount})`
     );
     await this.sendNotification(
-      `수동 URL 처리 완료\n**성공:** ${successCount}개\n**실패:** ${failCount}개`,
+      `수동 URL 처리 완료\n**성공:** ${successCount}개\n**실패:** ${failCount}개`
     );
   }
 
@@ -118,7 +121,7 @@ export class ManualUrlProcessorService {
         await this.updateStatus(
           request.id,
           "failed",
-          "YouTube API에서 영상 정보를 찾을 수 없음",
+          "YouTube API에서 영상 정보를 찾을 수 없음"
         );
         return;
       }
@@ -133,7 +136,7 @@ export class ManualUrlProcessorService {
       if (!caption) {
         await this.sendNotification(
           `자막 없음으로 건너뜀\n**URL:** ${request.link}`,
-          true,
+          true
         );
         await this.updateStatus(request.id, "skipped", "자막 없음");
         return;
@@ -142,32 +145,32 @@ export class ManualUrlProcessorService {
       if (caption.length < 200) {
         await this.sendNotification(
           `자막 길이 부족으로 건너뜀 (${caption.length}자)\n**URL:** ${request.link}`,
-          true,
+          true
         );
         await this.updateStatus(
           request.id,
           "skipped",
-          `자막 길이 부족 (${caption.length}자)`,
+          `자막 길이 부족 (${caption.length}자)`
         );
         return;
       }
 
       // 3. AI 요약 (키워드 필터 스킵)
       console.log(
-        `[ManualUrlProcessor]   - 에이전트로 Article 생성 중 (${storeName}): ${videoTitle}`,
+        `[ManualUrlProcessor]   - 에이전트로 Article 생성 중 (${storeName}): ${videoTitle}`
       );
 
       const articleDtos = await this.articleService.prepareArticles(
         request.link,
         caption,
         videoTitle,
-        storeName,
+        storeName
       );
 
       if (articleDtos.length === 0) {
         await this.sendNotification(
           `Article 생성 실패로 건너뜀\n**URL:** ${request.link}`,
-          true,
+          true
         );
         await this.updateStatus(request.id, "skipped", "Article 생성 실패");
         return;
@@ -194,21 +197,21 @@ export class ManualUrlProcessorService {
       // 5. article 테이블에 저장
       const articlesCreated = await this.articleService.saveArticles(
         articleDtos,
-        videoTitle,
+        videoTitle
       );
 
       console.log(
-        `[ManualUrlProcessor]   - 수동 요청 처리 완료: ${videoTitle} (${articlesCreated}개 Article)`,
+        `[ManualUrlProcessor]   - 수동 요청 처리 완료: ${videoTitle} (${articlesCreated}개 Article)`
       );
       await this.sendNotification(
-        `수동 URL 처리 완료\n**제목:** ${videoTitle}\n**Article:** ${articlesCreated}개\n**URL:** ${request.link}`,
+        `수동 URL 처리 완료\n**제목:** ${videoTitle}\n**Article:** ${articlesCreated}개\n**URL:** ${request.link}`
       );
 
       // 6. youtube_request 상태를 completed로 업데이트
       await this.updateStatus(
         request.id,
         "completed",
-        `처리 완료: ${articlesCreated}개 Article 생성`,
+        `처리 완료: ${articlesCreated}개 Article 생성`
       );
     } catch (error) {
       const errorMessage =
@@ -235,7 +238,7 @@ export class ManualUrlProcessorService {
         `미처리 수동 URL 조회 실패\n**에러:** ${
           error instanceof Error ? error.message : String(error)
         }`,
-        true,
+        true
       );
       return [];
     }
@@ -244,7 +247,7 @@ export class ManualUrlProcessorService {
   private async updateStatus(
     requestId: number,
     status: ProcessStatus,
-    message?: string,
+    message?: string
   ): Promise<void> {
     try {
       await this.youtubeRequestRepository.update(requestId, {
@@ -268,7 +271,7 @@ export class ManualUrlProcessorService {
 
   private async sendNotification(
     message: string,
-    isError = false,
+    isError = false
   ): Promise<void> {
     try {
       const emoji = isError ? "🚨" : "✅";

@@ -33,17 +33,17 @@ export class CaptionExtractionService {
       );
     }
 
-    // 2차: ANDROID 클라이언트
-    console.log("[Caption] 2차: ANDROID 클라이언트");
-    const androidCaption = await this.getCaptionFromAndroidClient(videoId);
-    if (androidCaption) return androidCaption;
-
-    // 3차: /next → /get_transcript
-    console.log("[Caption] 3차: /next → /get_transcript");
+    // 2차: /next → /get_transcript (timedtext 미사용, 429 우회)
+    console.log("[Caption] 2차: /next → /get_transcript");
     const transcriptCaption = await this.getCaptionFromTranscript(videoId);
     if (transcriptCaption) return transcriptCaption;
 
-    // 4차: 페이지 스크래핑
+    // 3차: ANDROID 클라이언트 (timedtext 사용)
+    console.log("[Caption] 3차: ANDROID 클라이언트");
+    const androidCaption = await this.getCaptionFromAndroidClient(videoId);
+    if (androidCaption) return androidCaption;
+
+    // 4차: 페이지 스크래핑 (timedtext 사용)
     console.log("[Caption] 4차: 페이지 스크래핑");
     const pageCaption = await this.getCaptionFromPage(videoId);
 
@@ -198,15 +198,19 @@ export class CaptionExtractionService {
           method: "POST",
           headers: session.headers,
           body: JSON.stringify({
-            ...session.payload,
+            context: session.payload.context,
             params: token,
           }),
         }
       );
 
       if (!transcriptResponse.ok) {
+        const errorBody = await transcriptResponse
+          .text()
+          .catch(() => "(읽기 실패)");
         console.log(
-          `[Caption:Transcript] /get_transcript 실패: ${transcriptResponse.status}`
+          `[Caption:Transcript] /get_transcript 실패: ${transcriptResponse.status}`,
+          errorBody.substring(0, 300)
         );
         return null;
       }
@@ -496,14 +500,15 @@ export class CaptionExtractionService {
   private async fetchWithRetry(
     url: string,
     options: RequestInit = {},
-    maxRetries = 3
+    maxRetries = 5
   ): Promise<Response> {
+    const waitSeconds = [5, 15, 30, 45, 60];
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const response = await this.fetchWithTimeout(url, options);
       if (response.status !== 429) return response;
 
       if (attempt < maxRetries) {
-        const waitSec = Math.pow(2, attempt + 1); // 2, 4, 8초
+        const waitSec = waitSeconds[attempt] ?? 60;
         console.log(
           `[Caption] 429 rate limit, ${waitSec}초 후 재시도 (${
             attempt + 1
