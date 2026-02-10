@@ -19,6 +19,11 @@ module.exports = [
     retain_logs: 5,
     env: {
       TZ: "Asia/Seoul",
+      DB_HOST: process.env.DB_HOST,
+      DB_PORT: process.env.DB_PORT,
+      DB_USER: process.env.DB_USER,
+      DB_PASSWORD: process.env.DB_PASSWORD,
+      DB_NAME: process.env.DB_NAME,
       COCOSCAN_DISCORD_WEBHOOK_URL: process.env.COCOSCAN_DISCORD_WEBHOOK_URL,
       GEMINI_API_KEY: process.env.GEMINI_API_KEY,
       YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY,
