@@ -12,8 +12,8 @@ import { YoutubeEntity } from "./youtube.entity";
 
 @Entity("article")
 export class ArticleEntity {
-  @PrimaryGeneratedColumn("uuid")
-  id: string;
+  @PrimaryGeneratedColumn()
+  id: number;
 
   @Index()
   @Column({ type: "text", name: "youtube_link" })
