@@ -23,7 +23,8 @@
     "rimraf": "3.0.2",
     "typeorm": "^0.3.28",
     "uuid": "^9.0.0",
-    "youtube-caption-extractor": "^1.9.1"
+    "youtube-caption-extractor": "^1.9.1",
+    "youtube-transcript": "^1.2.1"
   },
   "devDependencies": {
     "@types/jest": "29.5.8",

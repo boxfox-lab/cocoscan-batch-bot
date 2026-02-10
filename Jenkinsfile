@@ -14,6 +14,16 @@ pipeline {
                 sh 'yarn install'
             }
         }
+        stage('Setup yt-dlp') {
+            steps {
+                sh '''
+                    if ! command -v yt-dlp &> /dev/null; then
+                        pip3 install --user yt-dlp || curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp
+                    fi
+                    yt-dlp --version
+                '''
+            }
+        }
         stage('Unit & E2E Tests') {
             steps {
                 sh 'yarn test'
