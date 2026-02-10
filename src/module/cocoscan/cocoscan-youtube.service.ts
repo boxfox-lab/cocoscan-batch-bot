@@ -252,59 +252,142 @@ export class CocoscanYoutubeService {
   }
 
   /**
+   * XML 자막 텍스트를 파싱하여 문자열로 반환합니다.
+   */
+  private parseCaptionXml(xml: string): string | null {
+    const texts = xml.match(/<text[^>]*>(.*?)<\/text>/g);
+    if (!texts) return null;
+
+    return texts
+      .map((t: string) =>
+        t
+          .replace(/<text[^>]*>/, "")
+          .replace(/<\/text>/, "")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+      )
+      .join(" ");
+  }
+
+  /**
+   * 자막 트랙 목록에서 한국어 우선으로 자막 텍스트를 가져옵니다.
+   */
+  private async fetchCaptionFromTracks(
+    tracks: Array<{ languageCode: string; baseUrl?: string }>
+  ): Promise<string | null> {
+    if (tracks.length === 0) return null;
+
+    const koTrack = tracks.find((t) => t.languageCode === "ko");
+    const track = koTrack || tracks[0];
+    if (!track?.baseUrl) return null;
+
+    const response = await fetch(track.baseUrl);
+    if (!response.ok) return null;
+
+    return this.parseCaptionXml(await response.text());
+  }
+
+  /**
+   * ANDROID 클라이언트로 InnerTube API를 호출하여 자막을 가져옵니다.
+   * WEB 클라이언트가 UNPLAYABLE을 반환하는 경우의 폴백
+   */
+  private async getCaptionFromAndroidClient(
+    videoId: string
+  ): Promise<string | null> {
+    try {
+      const response = await fetch(
+        "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            videoId,
+            context: {
+              client: {
+                clientName: "ANDROID",
+                clientVersion: "19.09.37",
+                androidSdkVersion: 30,
+                hl: "ko",
+                gl: "KR",
+              },
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        console.log(
+          `[Cocoscan Youtube] ANDROID 클라이언트 응답 실패: ${response.status}`
+        );
+        return null;
+      }
+
+      const data = await response.json();
+      const status = data.playabilityStatus?.status;
+      console.log(
+        `[Cocoscan Youtube] ANDROID 클라이언트 상태 (${videoId}): ${status}`
+      );
+
+      if (status !== "OK") return null;
+
+      const tracks =
+        data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (!tracks || tracks.length === 0) {
+        console.log(
+          `[Cocoscan Youtube] ANDROID 클라이언트: captionTracks 없음 (${videoId})`
+        );
+        return null;
+      }
+
+      const caption = await this.fetchCaptionFromTracks(tracks);
+      if (caption) {
+        console.log(
+          `[Cocoscan Youtube] ANDROID 폴백으로 캡션 추출 성공 (${videoId}): ${caption.length}자`
+        );
+      }
+      return caption;
+    } catch (error) {
+      console.error(`ANDROID 폴백 캡션 추출 실패 (${videoId}):`, error);
+      return null;
+    }
+  }
+
+  /**
    * YouTube 페이지에서 직접 자막 URL을 추출하여 자막을 가져옵니다.
-   * InnerTube API가 UNPLAYABLE을 반환하는 경우의 폴백
    */
   private async getCaptionFromPage(videoId: string): Promise<string | null> {
     try {
-      const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
-      const response = await fetch(pageUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        },
-      });
+      const response = await fetch(
+        `https://www.youtube.com/watch?v=${videoId}`,
+        {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+          },
+        }
+      );
 
       if (!response.ok) return null;
 
       const html = await response.text();
       const match = html.match(/"captionTracks":(\[.*?\])/);
-      if (!match) return null;
+      if (!match) {
+        console.log(
+          `[Cocoscan Youtube] 페이지에서 captionTracks 없음 (${videoId})`
+        );
+        return null;
+      }
 
       const tracks = JSON.parse(match[1].replace(/\\u0026/g, "&"));
-      if (tracks.length === 0) return null;
-
-      // 한국어 트랙 우선, 없으면 첫 번째 트랙
-      const koTrack = tracks.find(
-        (t: { languageCode: string }) => t.languageCode === "ko"
-      );
-      const track = koTrack || tracks[0];
-      if (!track?.baseUrl) return null;
-
-      const captionResponse = await fetch(track.baseUrl);
-      if (!captionResponse.ok) return null;
-
-      const xml = await captionResponse.text();
-      // XML에서 텍스트 추출
-      const texts = xml.match(/<text[^>]*>(.*?)<\/text>/g);
-      if (!texts) return null;
-
-      const caption = texts
-        .map((t: string) =>
-          t
-            .replace(/<text[^>]*>/, "")
-            .replace(/<\/text>/, "")
-            .replace(/&amp;/g, "&")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-        )
-        .join(" ");
-
-      console.log(
-        `[Cocoscan Youtube] 페이지 폴백으로 캡션 추출 성공 (${videoId}): ${caption.length}자`
-      );
+      const caption = await this.fetchCaptionFromTracks(tracks);
+      if (caption) {
+        console.log(
+          `[Cocoscan Youtube] 페이지 폴백으로 캡션 추출 성공 (${videoId}): ${caption.length}자`
+        );
+      }
       return caption;
     } catch (error) {
       console.error(`페이지 폴백 캡션 추출 실패 (${videoId}):`, error);
@@ -314,36 +397,34 @@ export class CocoscanYoutubeService {
 
   /**
    * 유튜브 영상의 자막(캡션)을 가져옵니다.
-   * 1차: youtube-caption-extractor (InnerTube API)
-   * 2차: YouTube 페이지에서 직접 추출 (폴백)
+   * 1차: youtube-caption-extractor (InnerTube WEB 클라이언트)
+   * 2차: InnerTube ANDROID 클라이언트
+   * 3차: YouTube 페이지 스크래핑
    */
   private async getVideoCaption(videoId: string): Promise<string | null> {
+    // 1차: youtube-caption-extractor (WEB)
     try {
-      const captions = await getSubtitles({
-        videoID: videoId,
-        lang: "ko",
-      });
-
-      if (!captions || captions.length === 0) {
-        const englishCaptions = await getSubtitles({
-          videoID: videoId,
-          lang: "en",
-        });
-        if (!englishCaptions || englishCaptions.length === 0) {
-          // 폴백: YouTube 페이지에서 직접 추출
-          console.log(
-            `[Cocoscan Youtube] InnerTube 자막 실패, 페이지 폴백 시도 (${videoId})`
-          );
-          return this.getCaptionFromPage(videoId);
-        }
-        return englishCaptions.map((c: any) => c.text || c).join(" ");
+      const koCaption = await getSubtitles({ videoID: videoId, lang: "ko" });
+      if (koCaption && koCaption.length > 0) {
+        return koCaption.map((c: any) => c.text || c).join(" ");
       }
-      return captions.map((c: any) => c.text || c).join(" ");
+
+      const enCaption = await getSubtitles({ videoID: videoId, lang: "en" });
+      if (enCaption && enCaption.length > 0) {
+        return enCaption.map((c: any) => c.text || c).join(" ");
+      }
     } catch (error) {
-      console.error(`캡션 가져오기 실패 (${videoId}):`, error);
-      // 에러 시에도 폴백 시도
-      return this.getCaptionFromPage(videoId);
+      console.log(`[Cocoscan Youtube] WEB 클라이언트 자막 실패 (${videoId})`);
     }
+
+    // 2차: ANDROID 클라이언트
+    console.log(`[Cocoscan Youtube] ANDROID 클라이언트 폴백 시도 (${videoId})`);
+    const androidCaption = await this.getCaptionFromAndroidClient(videoId);
+    if (androidCaption) return androidCaption;
+
+    // 3차: 페이지 스크래핑
+    console.log(`[Cocoscan Youtube] 페이지 스크래핑 폴백 시도 (${videoId})`);
+    return this.getCaptionFromPage(videoId);
   }
 
   /**
@@ -518,9 +599,11 @@ export class CocoscanYoutubeService {
   private async findUnprocessedManualUrls(): Promise<YoutubeRequestEntity[]> {
     try {
       const unprocessed = await this.youtubeRequestRepository.find({
-        where: {
-          processStatus: "pending",
-        },
+        where: [
+          { processStatus: "pending" },
+          { processStatus: "skipped" },
+          { processStatus: "failed" },
+        ],
         order: {
           createdAt: "ASC",
         },
