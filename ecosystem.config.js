@@ -6,7 +6,7 @@ module.exports = [
     script: "dist/src/index.js",
     name: "cocoscan-batch-bot",
     autorestart: true,
-    max_restarts: 0,
+    max_restarts: -1,
     min_uptime: "10s",
     max_memory_restart: "500M",
     restart_delay: 1000,
