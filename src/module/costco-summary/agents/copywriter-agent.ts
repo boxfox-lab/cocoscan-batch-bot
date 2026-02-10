@@ -1,5 +1,5 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { TopicAnalysisResult } from './analysis-agent';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { TopicAnalysisResult } from "./analysis-agent";
 
 /** 작성된 Article 초안 */
 export interface ArticleDraft {
@@ -17,7 +17,7 @@ export class CopywriterAgent {
   constructor(apiKey?: string) {
     const key = apiKey || process.env.GEMINI_API_KEY;
     if (!key) {
-      throw new Error('GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.');
+      throw new Error("GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.");
     }
     this.genAI = new GoogleGenerativeAI(key);
   }
@@ -31,16 +31,16 @@ export class CopywriterAgent {
   async writeForTopic(
     topicAnalysis: TopicAnalysisResult,
     videoTitle?: string,
-    storeName: string = '코스트코',
+    storeName: string = "코스트코"
   ): Promise<ArticleDraft> {
     console.log(
-      `[CopywriterAgent] 주제별 콘텐츠 작성 시작: ${topicAnalysis.topicTitle}`,
+      `[CopywriterAgent] 주제별 콘텐츠 작성 시작: ${topicAnalysis.topicTitle}`
     );
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash-lite',
+      model: "gemini-2.0-flash-lite",
       generationConfig: {
-        responseMimeType: 'application/json',
+        responseMimeType: "application/json",
       },
     });
 
@@ -56,23 +56,36 @@ export class CopywriterAgent {
 ${
   videoTitle
     ? `참고 영상 제목 (SEO 키워드 참고용, 본문에 언급 금지): ${videoTitle}`
-    : ''
+    : ""
 }
-SEO 키워드 (본문에 자연스럽게 포함): ${topicAnalysis.keywords.join(', ')}
+SEO 키워드 (본문에 자연스럽게 포함): ${topicAnalysis.keywords.join(", ")}
 
-## 제목 작성 규칙 (SEO 최우선)
+## 제목 작성 규칙 (네이버 블로그 상위노출 스타일)
 1. 반드시 60자 이내로 작성하세요.
 2. "${storeName}"를 반드시 포함하세요. ${
-      storeName === '이마트 트레이더스'
+      storeName === "이마트 트레이더스"
         ? '(제목이 너무 길어질 경우 "트레이더스"로 축약 가능)'
-        : ''
+        : ""
     }
-3. 카테고리와 핵심 상품명을 포함하세요.
-4. 제목 패턴 예시:
-   - "${yearMonth} ${storeName} ${topicAnalysis.category} 할인 추천 TOP 5"
-   - "${storeName} [상품명] 가격 비교 및 구매 팁"
-   - "${storeName} ${topicAnalysis.category} 신상품 리뷰 | 가격·특징 총정리"
-5. 영상 제목을 그대로 사용하지 말고, 글 내용에 맞게 SEO 최적화된 새로운 제목을 생성하세요.
+3. 핵심 상품명을 구체적으로 포함하세요 (포괄적 카테고리명 대신 실제 상품명 사용).
+4. 콜론(:)이나 파이프(|) 구분을 절대 사용하지 마세요. 자연스러운 구어체로 작성하세요.
+5. 다음 금지 단어를 절대 사용하지 마세요: "쇼핑 필수템", "상품 정보", "꿀팁", "알뜰 쇼핑", "한 번에"
+6. 다음 중 하나 이상의 패턴을 활용하세요:
+   - 감정 훅: "이렇게 먹으니 순삭!", "바로 담았어요!", "여기 없는 게 없잖아"
+   - 숫자/수량: "BEST 3", "추천 5가지", "TOP 5"
+   - 긴급성/FOMO: "놓치면 아쉬운", "지금 안사면 아쉬운", "품절 전에"
+   - SEO 키워드 나열: "가격 종류 국내산 돼지고기 삼겹살 추천"
+   - 비교: "vs", "비교", "가격차이"
+   - 시기: "${yearMonth}" 등 구체적 시기 포함
+7. 실제 상위 노출 블로그 제목 예시 (이런 느낌으로 작성):
+   - "${storeName} 광어 이렇게 먹으니 순삭! 간단 술안주 광어묵은지초밥"
+   - "${storeName} 고기 설연휴 가격 종류 국내산 돼지고기 삼겹살 추천"
+   - "이것만 알아도 명절 성공! 단골이 쟁이는 명절 ${storeName} 고기"
+   - "${storeName} ${yearMonth} 할인상품 중 놓치면 아쉬운 5가지"
+   - "성분 보고 바로 담았어요! 글루텐 프리 ${storeName} 맛도리 과자 추천 BEST3"
+   - "${storeName} 신상 추천템 트러플 파마지아노 라비올리 & 알리오올리오 소스"
+   - "${storeName} 지퍼백 비교, 냉동 냉장 살림 필수템 정리"
+8. 영상 제목을 그대로 사용하지 말고, 글 내용에 맞게 새로운 제목을 생성하세요.
 
 ## summary 작성 규칙 (meta description용)
 1. 반드시 155자 이내로 작성하세요 (Google 검색 snippet 최적 길이).
@@ -95,7 +108,7 @@ SEO 키워드 (본문에 자연스럽게 포함): ${topicAnalysis.keywords.join(
 4. 정보 제공 형태로 작성하세요 ("~할 것 같아요", "~한 특징이 있어요", "~로 알려져 있어요", "~라고 하네요" 등 정보 전달 뉘앙스)
 5. 상품명, 가격, 구매 팁, 특징 등을 구체적이고 실용적으로 설명하세요
 6. SEO 키워드(${topicAnalysis.keywords.join(
-      ', ',
+      ", "
     )})를 본문 내에 자연스럽게 포함하되, 키워드 밀도가 과하지 않게 하세요
 7. ${storeName} 관련 키워드를 자연스럽게 포함하세요
 8. 객관적 사실과 정보를 중심으로 작성하되, 주부나 일반 쇼퍼의 관점에서 친근하게 표현하세요
@@ -121,7 +134,7 @@ ${JSON.stringify(topicAnalysis, null, 2)}
 반드시 다음 JSON 스키마를 따라 출력하세요:
 {
   "title": "string (60자 이내 SEO 최적화 제목, '${storeName}'${
-      storeName === '이마트 트레이더스' ? ' 또는 "트레이더스"' : ''
+      storeName === "이마트 트레이더스" ? ' 또는 "트레이더스"' : ""
     } 필수 포함)",
   "content": "string (마크다운 형식의 전체 본문)",
   "summary": "string (155자 이내 meta description용 요약, '${storeName}' 필수 포함)"
@@ -133,7 +146,7 @@ ${JSON.stringify(topicAnalysis, null, 2)}
 
     // 삭선 제거 (안전장치)
     if (parsed.content) {
-      parsed.content = parsed.content.replace(/~~([^~]+)~~/g, '$1');
+      parsed.content = parsed.content.replace(/~~([^~]+)~~/g, "$1");
     }
 
     return parsed;

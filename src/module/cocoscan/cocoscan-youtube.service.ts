@@ -1,38 +1,20 @@
-import { getSubtitles } from "youtube-caption-extractor";
 import { Repository } from "typeorm";
 import { AppDataSource } from "../../database/data-source";
-import {
-  YoutubeEntity,
-  ContentChannelType,
-  ProcessStatus,
-} from "../../entity/youtube.entity";
-import { YoutubeRequestEntity } from "../../entity/youtube-request.entity";
-import { ArticleEntity } from "../../entity/article.entity";
+import { YoutubeEntity, ContentChannelType } from "../../entity/youtube.entity";
 import {
   getChannelByHandle,
   getChannelContentDetails,
   getPlaylistItems,
   searchVideos,
-  getVideoDetails,
 } from "../../remotes/youtube";
 import { GlobalErrorHandler } from "../../util/error/global-error-handler";
 import { sendDiscordMessage } from "../../remotes/discord/sendDiscordMessage";
-import { CostcoSummaryService } from "../costco-summary";
+import { CaptionExtractionService } from "./services/caption-extraction.service";
+import { ArticlePersistenceService } from "./services/article-persistence.service";
+import { ManualUrlProcessorService } from "./services/manual-url-processor.service";
 
 // ChannelType은 ContentChannelType과 동일
 export type ChannelType = ContentChannelType;
-
-// Article 생성을 위한 DTO
-interface CreateArticleDto {
-  youtubeLink: string;
-  topicTitle: string;
-  category: string;
-  title: string;
-  content: string;
-  summary: string;
-  keywords: string[];
-  products: any[];
-}
 
 const COCOSCAN_DISCORD_WEBHOOK_URL =
   "https://discord.com/api/webhooks/1442706911119151276/qVB4crG3fHSgtPUxehMT9QkxyXzqsx47p7FCT0lhZHL6Mgj-G2LYb86PjQl_RHN0HYoO";
@@ -74,1052 +56,19 @@ const YOUTUBE_CHANNELS: ChannelConfig[] = [
 ];
 
 export class CocoscanYoutubeService {
-  private readonly costcoSummaryService: CostcoSummaryService;
+  private readonly captionService: CaptionExtractionService;
+  private readonly articleService: ArticlePersistenceService;
+  private readonly manualUrlProcessor: ManualUrlProcessorService;
   private readonly youtubeRepository: Repository<YoutubeEntity>;
-  private readonly youtubeRequestRepository: Repository<YoutubeRequestEntity>;
-  private readonly articleRepository: Repository<ArticleEntity>;
 
   constructor() {
-    this.costcoSummaryService = new CostcoSummaryService();
+    this.captionService = new CaptionExtractionService();
+    this.articleService = new ArticlePersistenceService();
+    this.manualUrlProcessor = new ManualUrlProcessorService(
+      this.captionService,
+      this.articleService,
+    );
     this.youtubeRepository = AppDataSource.getRepository(YoutubeEntity);
-    this.youtubeRequestRepository =
-      AppDataSource.getRepository(YoutubeRequestEntity);
-    this.articleRepository = AppDataSource.getRepository(ArticleEntity);
-  }
-
-  /**
-   * 자막을 분석하여 Article DTO를 준비합니다 (저장하지 않음)
-   * @param videoLink 유튜브 영상 링크
-   * @param caption 자막 원본
-   * @param videoTitle 원본 영상 제목 (SEO 키워드 참고용)
-   * @param storeName 매장 브랜드명 (예: '코스트코', '이마트 트레이더스')
-   * @returns Article DTO 배열 (저장 준비 완료)
-   */
-  private async prepareArticles(
-    videoLink: string,
-    caption: string,
-    videoTitle?: string,
-    storeName: string = "코스트코"
-  ): Promise<CreateArticleDto[]> {
-    try {
-      await this.sendDiscordNotification(
-        `AI 요약 시작\n**제목:** ${
-          videoTitle ?? "(없음)"
-        }\n**매장:** ${storeName}`
-      );
-
-      // 1. CostcoSummaryService를 통해 Article 생성 (영상 제목, 매장명 전달)
-      const generatedArticles =
-        await this.costcoSummaryService.generateArticles(
-          caption,
-          videoTitle,
-          storeName
-        );
-
-      if (generatedArticles.length === 0) {
-        await this.sendDiscordNotification(
-          `AI 요약 완료 (생성된 Article 없음)\n**제목:** ${
-            videoTitle ?? "(없음)"
-          }`
-        );
-        console.log("[Cocoscan Youtube] 생성된 Article이 없습니다.");
-        return [];
-      }
-
-      await this.sendDiscordNotification(
-        `AI 요약 완료\n**제목:** ${videoTitle ?? "(없음)"}\n**생성 주제:** ${
-          generatedArticles.length
-        }개`
-      );
-
-      // 2. CreateArticleDto 형태로 변환 (저장은 하지 않음)
-      const articleDtos: CreateArticleDto[] = generatedArticles.map(
-        (article) => ({
-          youtubeLink: videoLink,
-          topicTitle: article.topicTitle,
-          category: article.category,
-          title: article.title,
-          content: article.content,
-          summary: article.summary,
-          keywords: article.keywords,
-          products: article.products,
-        })
-      );
-
-      console.log(
-        `[Cocoscan Youtube] ${articleDtos.length}개 Article 준비 완료 (저장 대기 중)`
-      );
-      return articleDtos;
-    } catch (error) {
-      const errorMessage = `AI 요약 실패\n**제목:** ${
-        videoTitle ?? "(없음)"
-      }\n**에러:** ${error instanceof Error ? error.message : String(error)}`;
-      console.error("[Cocoscan Youtube] Article 생성 실패:", error);
-      await this.sendDiscordNotification(errorMessage, true);
-      await GlobalErrorHandler.handleError(
-        error as Error,
-        "CocoscanYoutubeService.prepareArticles",
-        { videoLink, videoTitle }
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * 준비된 Article DTO들을 DB에 저장합니다
-   * @param articleDtos 저장할 Article 데이터 배열
-   * @param videoTitle 영상 제목 (Discord 알림용)
-   * @returns 저장된 Article 개수
-   */
-  private async saveArticles(
-    articleDtos: Array<{
-      youtubeLink: string;
-      topicTitle: string;
-      category: string;
-      title: string;
-      content: string;
-      summary: string;
-      keywords: string[];
-      products: any[];
-    }>,
-    videoTitle?: string
-  ): Promise<number> {
-    try {
-      // ArticleEntity 생성 및 저장
-      const articles = articleDtos.map((dto) =>
-        this.articleRepository.create(dto)
-      );
-      const saved = await this.articleRepository.save(articles);
-
-      console.log(`[Cocoscan Youtube] ${saved.length}개 Article 저장 완료`);
-      await this.sendDiscordNotification(
-        `Article 저장 완료\n**제목:** ${videoTitle ?? "(없음)"}\n**저장:** ${
-          saved.length
-        }개`
-      );
-      return saved.length;
-    } catch (error) {
-      const errorMessage = `Article 저장 실패\n**제목:** ${
-        videoTitle ?? "(없음)"
-      }\n**개수:** ${articleDtos.length}개\n**에러:** ${
-        error instanceof Error ? error.message : String(error)
-      }`;
-      console.error("[Cocoscan Youtube] Article 저장 실패:", error);
-      await this.sendDiscordNotification(errorMessage, true);
-      await GlobalErrorHandler.handleError(
-        error as Error,
-        "CocoscanYoutubeService.saveArticles",
-        { articleCount: articleDtos.length, videoTitle }
-      );
-      throw error;
-    }
-  }
-
-  private async sendDiscordNotification(
-    message: string,
-    isError = false
-  ): Promise<void> {
-    try {
-      const emoji = isError ? "🚨" : "✅";
-      const timestamp = new Date().toISOString();
-      const fullMessage = `${emoji} **Cocoscan Youtube**\n\n${message}\n\n**시간:** ${timestamp}`;
-      await sendDiscordMessage(fullMessage, COCOSCAN_DISCORD_WEBHOOK_URL);
-    } catch (error) {
-      console.error("[Discord] 알림 전송 실패:", error);
-    }
-  }
-
-  /**
-   * 영상이 해당 매장과 관련이 있는지 확인합니다.
-   */
-  private isStoreRelated(
-    channelType: ChannelType,
-    title: string,
-    description: string,
-    caption: string | null
-  ): boolean {
-    const keywords = STORE_KEYWORD_MAP[channelType];
-    const titleLower = title.toLowerCase();
-    const descriptionLower = description.toLowerCase();
-    const captionLower = caption?.toLowerCase() || "";
-
-    return keywords.some(
-      (keyword) =>
-        titleLower.includes(keyword) ||
-        descriptionLower.includes(keyword) ||
-        captionLower.includes(keyword)
-    );
-  }
-
-  private fetchWithTimeout(
-    url: string,
-    options: RequestInit = {},
-    timeoutMs = 30_000
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-      clearTimeout(timer)
-    );
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * 429 대응: 재시도 + 지수 백오프
-   */
-  private async fetchWithRetry(
-    url: string,
-    options: RequestInit = {},
-    maxRetries = 3
-  ): Promise<Response> {
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await this.fetchWithTimeout(url, options);
-      if (response.status !== 429) return response;
-
-      if (attempt < maxRetries) {
-        const waitSec = Math.pow(2, attempt + 1); // 2, 4, 8초
-        console.log(
-          `[Caption] 429 rate limit, ${waitSec}초 후 재시도 (${
-            attempt + 1
-          }/${maxRetries})`
-        );
-        await this.delay(waitSec * 1000);
-      }
-    }
-    // 마지막 시도도 429면 그대로 반환
-    return this.fetchWithTimeout(url, options);
-  }
-
-  /**
-   * XML 자막 텍스트를 파싱하여 문자열로 반환합니다.
-   */
-  private parseCaptionXml(xml: string): string | null {
-    const texts = xml.match(/<text[^>]*>(.*?)<\/text>/g);
-    if (!texts) return null;
-
-    return texts
-      .map((t: string) =>
-        t
-          .replace(/<text[^>]*>/, "")
-          .replace(/<\/text>/, "")
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&#39;/g, "'")
-      )
-      .join(" ");
-  }
-
-  /**
-   * 자막 트랙 목록에서 한국어 우선으로 자막 텍스트를 가져옵니다.
-   */
-  private async fetchCaptionFromTracks(
-    tracks: Array<{ languageCode: string; baseUrl?: string }>,
-    label: string
-  ): Promise<string | null> {
-    if (tracks.length === 0) {
-      console.log(`[Caption:${label}] 트랙 0개`);
-      return null;
-    }
-
-    console.log(
-      `[Caption:${label}] 트랙 ${tracks.length}개: ${tracks
-        .map((t) => t.languageCode)
-        .join(", ")}`
-    );
-
-    const koTrack = tracks.find((t) => t.languageCode === "ko");
-    const track = koTrack || tracks[0];
-    if (!track?.baseUrl) {
-      console.log(`[Caption:${label}] baseUrl 없음`);
-      return null;
-    }
-
-    console.log(
-      `[Caption:${label}] ${
-        track.languageCode
-      } 트랙 요청: ${track.baseUrl.substring(0, 100)}...`
-    );
-    const response = await this.fetchWithRetry(track.baseUrl);
-    if (!response.ok) {
-      console.log(
-        `[Caption:${label}] XML 응답 실패: ${response.status} ${response.statusText}`
-      );
-      return null;
-    }
-
-    const text = await response.text();
-    console.log(`[Caption:${label}] XML 응답 크기: ${text.length}자`);
-
-    const caption = this.parseCaptionXml(text);
-    if (!caption) {
-      console.log(
-        `[Caption:${label}] XML 파싱 실패. 응답 시작: ${text.substring(0, 200)}`
-      );
-    } else {
-      console.log(`[Caption:${label}] 캡션 추출 성공: ${caption.length}자`);
-    }
-    return caption;
-  }
-
-  /**
-   * ANDROID 클라이언트로 InnerTube API를 호출하여 자막을 가져옵니다.
-   */
-  private async getCaptionFromAndroidClient(
-    videoId: string
-  ): Promise<string | null> {
-    try {
-      const response = await this.fetchWithTimeout(
-        "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            videoId,
-            context: {
-              client: {
-                clientName: "ANDROID",
-                clientVersion: "19.09.37",
-                androidSdkVersion: 30,
-                hl: "ko",
-                gl: "KR",
-              },
-            },
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        console.log(
-          `[Caption:ANDROID] HTTP 실패: ${response.status} ${response.statusText}`
-        );
-        return null;
-      }
-
-      const data = await response.json();
-      const status = data.playabilityStatus?.status;
-      const reason = data.playabilityStatus?.reason;
-      console.log(
-        `[Caption:ANDROID] 상태: ${status}${reason ? ` (${reason})` : ""}`
-      );
-
-      if (status !== "OK") return null;
-
-      const tracks =
-        data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      return this.fetchCaptionFromTracks(tracks || [], "ANDROID");
-    } catch (error) {
-      console.error(`[Caption:ANDROID] 에러:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * InnerTube 세션 데이터 생성 (라이브러리 동일 방식)
-   */
-  private generateInnerTubeSession() {
-    const chars =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let visitorData = "";
-    for (let i = 0; i < 11; i++) {
-      visitorData += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-
-    const key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-    const clientVersion = "2.20250222.10.00";
-
-    return {
-      key,
-      visitorData,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "*/*",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "X-Youtube-Client-Version": clientVersion,
-        "X-Youtube-Client-Name": "1",
-        "X-Goog-Visitor-Id": visitorData,
-        Origin: "https://www.youtube.com",
-        Referer: "https://www.youtube.com/",
-      },
-      payload: {
-        context: {
-          client: {
-            hl: "ko",
-            gl: "KR",
-            clientName: "WEB",
-            clientVersion,
-            visitorData,
-          },
-          user: { enableSafetyMode: false },
-          request: { useSsl: true },
-        },
-        visitorData,
-      },
-    };
-  }
-
-  /**
-   * InnerTube /next → /get_transcript 방식으로 자막을 가져옵니다.
-   * timedtext URL을 거치지 않아 429 rate limit을 우회합니다.
-   */
-  private async getCaptionFromTranscript(
-    videoId: string
-  ): Promise<string | null> {
-    try {
-      const session = this.generateInnerTubeSession();
-      const baseUrl = "https://www.youtube.com/youtubei/v1";
-
-      // 1. /next로 engagement panel에서 transcript 토큰 추출
-      const nextResponse = await this.fetchWithTimeout(
-        `${baseUrl}/next?key=${session.key}`,
-        {
-          method: "POST",
-          headers: session.headers,
-          body: JSON.stringify({
-            ...session.payload,
-            videoId,
-          }),
-        }
-      );
-
-      if (!nextResponse.ok) {
-        console.log(`[Caption:Transcript] /next 실패: ${nextResponse.status}`);
-        return null;
-      }
-
-      const nextData = await nextResponse.json();
-      const panels = nextData.engagementPanels || [];
-      console.log(`[Caption:Transcript] engagement panels: ${panels.length}개`);
-
-      // transcript 패널에서 continuation 토큰 추출 (3가지 방법)
-      let token: string | null = null;
-
-      const transcriptPanel = panels.find(
-        (p: any) =>
-          p?.engagementPanelSectionListRenderer?.panelIdentifier ===
-          "engagement-panel-searchable-transcript"
-      );
-
-      if (!transcriptPanel) {
-        console.log("[Caption:Transcript] transcript 패널 없음");
-        return null;
-      }
-
-      const content =
-        transcriptPanel.engagementPanelSectionListRenderer?.content;
-
-      // Method 1: continuationCommand.token
-      const ci1 = content?.continuationItemRenderer;
-      if (ci1?.continuationEndpoint?.continuationCommand?.token) {
-        token = ci1.continuationEndpoint.continuationCommand.token;
-        console.log("[Caption:Transcript] 토큰 방법 1: continuationCommand");
-      }
-
-      // Method 2: getTranscriptEndpoint.params
-      if (!token && ci1?.continuationEndpoint?.getTranscriptEndpoint?.params) {
-        token = ci1.continuationEndpoint.getTranscriptEndpoint.params;
-        console.log("[Caption:Transcript] 토큰 방법 2: getTranscriptEndpoint");
-      }
-
-      // Method 3: sectionListRenderer
-      if (!token && content?.sectionListRenderer?.contents?.[0]) {
-        const ci2 =
-          content.sectionListRenderer.contents[0].continuationItemRenderer;
-        if (ci2?.continuationEndpoint?.continuationCommand?.token) {
-          token = ci2.continuationEndpoint.continuationCommand.token;
-          console.log("[Caption:Transcript] 토큰 방법 3: sectionListRenderer");
-        }
-      }
-
-      // Method 4: transcriptRenderer footer language menu
-      if (!token && content?.sectionListRenderer?.contents) {
-        for (const item of content.sectionListRenderer.contents) {
-          const menuItems =
-            item?.transcriptRenderer?.footer?.transcriptFooterRenderer
-              ?.languageMenu?.sortFilterSubMenuRenderer?.subMenuItems;
-          if (menuItems) {
-            const selected =
-              menuItems.find((m: any) => m?.selected === true) || menuItems[0];
-            if (selected?.continuation?.reloadContinuationData?.continuation) {
-              token = selected.continuation.reloadContinuationData.continuation;
-              console.log("[Caption:Transcript] 토큰 방법 4: languageMenu");
-              break;
-            }
-          }
-        }
-      }
-
-      if (!token) {
-        console.log("[Caption:Transcript] 토큰 추출 실패");
-        return null;
-      }
-
-      // 2. /get_transcript로 자막 텍스트 직접 추출
-      const transcriptResponse = await this.fetchWithTimeout(
-        `${baseUrl}/get_transcript?key=${session.key}`,
-        {
-          method: "POST",
-          headers: session.headers,
-          body: JSON.stringify({
-            ...session.payload,
-            params: token,
-          }),
-        }
-      );
-
-      if (!transcriptResponse.ok) {
-        console.log(
-          `[Caption:Transcript] /get_transcript 실패: ${transcriptResponse.status}`
-        );
-        return null;
-      }
-
-      const transcriptData = await transcriptResponse.json();
-
-      // 응답에서 세그먼트 추출
-      const initialSegments =
-        transcriptData?.actions?.[0]?.updateEngagementPanelAction?.content
-          ?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body
-          ?.transcriptSegmentListRenderer?.initialSegments;
-
-      if (!initialSegments || !Array.isArray(initialSegments)) {
-        console.log(
-          "[Caption:Transcript] initialSegments 없음. 응답 키:",
-          JSON.stringify(Object.keys(transcriptData)).substring(0, 200)
-        );
-        return null;
-      }
-
-      const segments: string[] = [];
-      for (const seg of initialSegments) {
-        const renderer = seg.transcriptSegmentRenderer;
-        if (!renderer) continue;
-
-        let text = "";
-        if (renderer.snippet?.simpleText) {
-          text = renderer.snippet.simpleText;
-        } else if (renderer.snippet?.runs) {
-          text = renderer.snippet.runs.map((r: any) => r.text).join("");
-        }
-        if (text.trim()) segments.push(text.trim());
-      }
-
-      if (segments.length === 0) {
-        console.log("[Caption:Transcript] 세그먼트 0개");
-        return null;
-      }
-
-      const caption = segments.join(" ");
-      console.log(
-        `[Caption:Transcript] 추출 성공: ${caption.length}자 (${segments.length}개 세그먼트)`
-      );
-      return caption;
-    } catch (error) {
-      console.error("[Caption:Transcript] 에러:", error);
-      return null;
-    }
-  }
-
-  /**
-   * YouTube 페이지에서 직접 자막 URL을 추출하여 자막을 가져옵니다.
-   */
-  private async getCaptionFromPage(videoId: string): Promise<string | null> {
-    try {
-      const response = await this.fetchWithTimeout(
-        `https://www.youtube.com/watch?v=${videoId}`,
-        {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-          },
-        }
-      );
-
-      if (!response.ok) {
-        console.log(`[Caption:Page] HTTP 실패: ${response.status}`);
-        return null;
-      }
-
-      const html = await response.text();
-      console.log(`[Caption:Page] HTML 크기: ${html.length}자`);
-
-      const match = html.match(/"captionTracks":(\[.*?\])/);
-      if (!match) {
-        // 원인 진단 로그
-        const hasPlayerResponse = html.includes("playerResponse");
-        const hasCaptions = html.includes("captions");
-        const hasConsentForm = html.includes("consent.youtube.com");
-        console.log(
-          `[Caption:Page] captionTracks 없음 (playerResponse=${hasPlayerResponse}, captions=${hasCaptions}, consent=${hasConsentForm})`
-        );
-        return null;
-      }
-
-      const tracks = JSON.parse(match[1].replace(/\\u0026/g, "&"));
-      return this.fetchCaptionFromTracks(tracks, "Page");
-    } catch (error) {
-      console.error("[Caption:Page] 에러:", error);
-      return null;
-    }
-  }
-
-  /**
-   * 유튜브 영상의 자막(캡션)을 가져옵니다.
-   * 1차: youtube-caption-extractor (InnerTube WEB)
-   * 2차: InnerTube ANDROID 클라이언트
-   * 3차: InnerTube /next → /get_transcript
-   * 4차: YouTube 페이지 스크래핑
-   */
-  private async getVideoCaption(videoId: string): Promise<string | null> {
-    console.log(`[Caption] === 자막 추출 시작: ${videoId} ===`);
-
-    // 1차: youtube-caption-extractor (WEB)
-    try {
-      console.log("[Caption] 1차: youtube-caption-extractor (WEB)");
-      const koCaption = await getSubtitles({ videoID: videoId, lang: "ko" });
-      if (koCaption && koCaption.length > 0) {
-        console.log(`[Caption] WEB ko 성공: ${koCaption.length}개 세그먼트`);
-        return koCaption.map((c: any) => c.text || c).join(" ");
-      }
-      console.log(`[Caption] WEB ko 결과: ${koCaption?.length ?? 0}개`);
-
-      const enCaption = await getSubtitles({ videoID: videoId, lang: "en" });
-      if (enCaption && enCaption.length > 0) {
-        console.log(`[Caption] WEB en 성공: ${enCaption.length}개 세그먼트`);
-        return enCaption.map((c: any) => c.text || c).join(" ");
-      }
-      console.log(`[Caption] WEB en 결과: ${enCaption?.length ?? 0}개`);
-    } catch (error) {
-      console.log(
-        `[Caption] WEB 실패: ${error instanceof Error ? error.message : error}`
-      );
-    }
-
-    // 2차: ANDROID 클라이언트
-    console.log("[Caption] 2차: ANDROID 클라이언트");
-    const androidCaption = await this.getCaptionFromAndroidClient(videoId);
-    if (androidCaption) return androidCaption;
-
-    // 3차: /next → /get_transcript
-    console.log("[Caption] 3차: /next → /get_transcript");
-    const transcriptCaption = await this.getCaptionFromTranscript(videoId);
-    if (transcriptCaption) return transcriptCaption;
-
-    // 4차: 페이지 스크래핑
-    console.log("[Caption] 4차: 페이지 스크래핑");
-    const pageCaption = await this.getCaptionFromPage(videoId);
-
-    if (!pageCaption) {
-      console.log(`[Caption] === 모든 방법 실패: ${videoId} ===`);
-    }
-    return pageCaption;
-  }
-
-  /**
-   * 키워드 검색을 기반으로 영상을 수집하고 처리합니다.
-   * @param keyword 검색어
-   * @param channelType 매장 타입
-   */
-  private async processSearchBasedVideos(
-    keyword: string,
-    channelType: ChannelType
-  ): Promise<{ processed: number; created: number; errors: number }> {
-    const apiKey = process.env.YOUTUBE_API_KEY;
-    if (!apiKey) return { processed: 0, created: 0, errors: 0 };
-
-    const storeName = STORE_NAME_MAP[channelType];
-    console.log(
-      `[Cocoscan Youtube] '${keyword}' 키워드로 검색 기반 수집 시작...`
-    );
-
-    let processedCount = 0;
-    let createdCount = 0;
-    let errorCount = 0;
-
-    try {
-      const searchResult = await searchVideos(keyword, apiKey, 10);
-      if (!searchResult || searchResult.items.length === 0) {
-        console.log(`[Cocoscan Youtube] '${keyword}' 검색 결과가 없습니다.`);
-        return { processed: 0, created: 0, errors: 0 };
-      }
-
-      for (const item of searchResult.items) {
-        try {
-          const videoId = item.id.videoId;
-          const link = `https://www.youtube.com/watch?v=${videoId}`;
-          const title = item.snippet.title;
-
-          // 1차 필터: 이미 등록된 영상인지 확인
-          const existingVideo = await this.youtubeRepository.findOne({
-            where: { link },
-          });
-          if (existingVideo) {
-            console.log(
-              `[Cocoscan Youtube]   - [스킵] ${title} (이미 등록된 링크)`
-            );
-            continue;
-          }
-
-          processedCount++;
-
-          // 캡션 가져오기
-          console.log(`[Cocoscan Youtube]   - 캡션 가져오는 중: ${title}`);
-          const caption = await this.getVideoCaption(videoId);
-
-          if (!caption) {
-            console.log(`[Cocoscan Youtube]   - [스킵] ${title} (캡션 없음)`);
-            continue;
-          }
-
-          // 2차 필터: 캡션 내 키워드 포함 여부 및 길이 체크 (200자 이상)
-          if (!this.isStoreRelated(channelType, title, "", caption)) {
-            console.log(
-              `[Cocoscan Youtube]   - [스킵] ${title} (${storeName} 관련 키워드 없음)`
-            );
-            continue;
-          }
-
-          if (caption.length < 200) {
-            console.log(
-              `[Cocoscan Youtube]   - [스킵] ${title} (캡션 길이 부족: ${caption.length}자)`
-            );
-            continue;
-          }
-
-          // 에이전트 실행 및 저장
-          console.log(
-            `[Cocoscan Youtube]   - 에이전트로 Article 생성 중 (${storeName}): ${title}`
-          );
-
-          // 1. Article 먼저 준비 (저장하지 않음)
-          const articleDtos = await this.prepareArticles(
-            link,
-            caption,
-            title,
-            storeName
-          );
-
-          // 2. Article이 성공적으로 준비되었으면 YouTube + Article 함께 저장
-          if (articleDtos.length > 0) {
-            // 2-1. YoutubeEntity 저장
-            const youtube = this.youtubeRepository.create({
-              link,
-              channelName: item.snippet.channelTitle,
-              channelId: item.snippet.channelId,
-              channelType,
-              title,
-              snippet: item.snippet.description,
-              publishedAt: new Date(item.snippet.publishedAt),
-              thumbnail: item.snippet.thumbnails.high?.url,
-              sourceType: "auto",
-              processStatus: "pending",
-            });
-            await this.youtubeRepository.save(youtube);
-            await this.sendDiscordNotification(
-              `Youtube 저장 완료\n**제목:** ${title}\n**매장:** ${storeName}\n**검색어:** ${keyword}`
-            );
-
-            // 2-2. Article 저장
-            const articlesCreated = await this.saveArticles(articleDtos, title);
-
-            console.log(
-              `[Cocoscan Youtube]   - ✅ 등록 완료: ${title} (${articlesCreated}개 Article)`
-            );
-            createdCount++;
-            await this.sendDiscordNotification(
-              `✅ 검색 기반 영상 등록 완료\n**검색어:** ${keyword}\n**제목:** ${title}\n**Article:** ${articlesCreated}개`
-            );
-          } else {
-            console.log(
-              `[Cocoscan Youtube]   - [스킵] ${title} (Article 생성 실패)`
-            );
-            await this.sendDiscordNotification(
-              `⚠️ Article 생성 실패로 건너뜀\n**검색어:** ${keyword}\n**제목:** ${title}`,
-              true
-            );
-          }
-        } catch (error) {
-          errorCount++;
-          const errorMessage = `검색 결과 처리 중 오류\n**검색어:** ${keyword}\n**영상:** ${
-            item.snippet.title
-          }\n**에러:** ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-          console.error(
-            `[Cocoscan Youtube] 검색 결과 처리 중 오류 (${item.snippet.title}):`,
-            error
-          );
-          await this.sendDiscordNotification(errorMessage, true);
-          await GlobalErrorHandler.handleError(
-            error as Error,
-            "CocoscanYoutubeService.processSearchBasedVideos",
-            { videoId: item.id.videoId, keyword }
-          );
-        }
-      }
-
-      return {
-        processed: processedCount,
-        created: createdCount,
-        errors: errorCount,
-      };
-    } catch (error) {
-      console.error(
-        `[Cocoscan Youtube] 검색 기반 수집 실패 (${keyword}):`,
-        error
-      );
-      return { processed: 0, created: 0, errors: 1 };
-    }
-  }
-
-  /**
-   * 유튜브 URL에서 videoId 추출
-   */
-  private extractVideoId(url: string): string {
-    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\?]+)/);
-    return match ? match[1] : "";
-  }
-
-  /**
-   * 미처리 수동 URL 조회
-   * youtube_request 테이블에서 processStatus='pending' 조회
-   */
-  private async findUnprocessedManualUrls(): Promise<YoutubeRequestEntity[]> {
-    try {
-      const unprocessed = await this.youtubeRequestRepository.find({
-        where: [
-          { processStatus: "pending" },
-          { processStatus: "processing" },
-          { processStatus: "skipped" },
-          { processStatus: "failed" },
-        ],
-        order: {
-          createdAt: "ASC",
-        },
-      });
-
-      return unprocessed;
-    } catch (error) {
-      console.error("[Cocoscan Youtube] 미처리 수동 URL 조회 실패:", error);
-      await this.sendDiscordNotification(
-        `미처리 수동 URL 조회 실패\n**에러:** ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        true
-      );
-      return [];
-    }
-  }
-
-  /**
-   * youtube_request 처리 상태 업데이트
-   */
-  private async updateRequestStatus(
-    requestId: number,
-    status: ProcessStatus,
-    message?: string
-  ): Promise<void> {
-    try {
-      await this.youtubeRequestRepository.update(requestId, {
-        processStatus: status,
-        processMessage: message || null,
-        processedAt: new Date(),
-      });
-    } catch (error) {
-      console.error("[Cocoscan Youtube] 요청 상태 업데이트 실패:", error);
-    }
-  }
-
-  /**
-   * 수동 요청 처리 (youtube_request → youtube + article)
-   * 키워드 필터 스킵 (사용자가 명시적으로 등록한 URL이므로)
-   * 성공 시 youtube 테이블에 완성된 데이터를 직접 저장
-   */
-  private async processManualRequest(
-    request: YoutubeRequestEntity
-  ): Promise<void> {
-    const videoId = this.extractVideoId(request.link);
-    if (!videoId) {
-      console.log(`[Cocoscan Youtube] 유효하지 않은 URL: ${request.link}`);
-      await this.updateRequestStatus(request.id, "failed", "유효하지 않은 URL");
-      return;
-    }
-
-    const storeName = STORE_NAME_MAP[request.channelType || "costco"];
-
-    // processing 상태로 변경
-    await this.updateRequestStatus(request.id, "processing", "처리 중");
-
-    try {
-      // 1. YouTube API로 메타데이터 조회
-      const apiKey = process.env.YOUTUBE_API_KEY;
-      if (!apiKey) {
-        await this.updateRequestStatus(
-          request.id,
-          "failed",
-          "YOUTUBE_API_KEY 없음"
-        );
-        return;
-      }
-
-      const videoInfo = await getVideoDetails(videoId, apiKey);
-      if (!videoInfo?.items?.length) {
-        await this.updateRequestStatus(
-          request.id,
-          "failed",
-          "YouTube API에서 영상 정보를 찾을 수 없음"
-        );
-        return;
-      }
-
-      const snippet = videoInfo.items[0].snippet;
-      const videoTitle = snippet.title;
-      console.log(`[Cocoscan Youtube] 수동 요청 처리 중: ${videoTitle}`);
-
-      // 2. 자막 추출
-      const caption = await this.getVideoCaption(videoId);
-
-      if (!caption) {
-        await this.sendDiscordNotification(
-          `자막 없음으로 건너뜀\n**URL:** ${request.link}`,
-          true
-        );
-        await this.updateRequestStatus(request.id, "skipped", "자막 없음");
-        return;
-      }
-
-      if (caption.length < 200) {
-        await this.sendDiscordNotification(
-          `자막 길이 부족으로 건너뜀 (${caption.length}자)\n**URL:** ${request.link}`,
-          true
-        );
-        await this.updateRequestStatus(
-          request.id,
-          "skipped",
-          `자막 길이 부족 (${caption.length}자)`
-        );
-        return;
-      }
-
-      // 3. AI 요약 (키워드 필터 스킵 — 사용자가 명시적으로 등록한 URL)
-      console.log(
-        `[Cocoscan Youtube]   - 에이전트로 Article 생성 중 (${storeName}): ${videoTitle}`
-      );
-
-      const articleDtos = await this.prepareArticles(
-        request.link,
-        caption,
-        videoTitle,
-        storeName
-      );
-
-      if (articleDtos.length === 0) {
-        await this.sendDiscordNotification(
-          `Article 생성 실패로 건너뜀\n**URL:** ${request.link}`,
-          true
-        );
-        await this.updateRequestStatus(
-          request.id,
-          "skipped",
-          "Article 생성 실패"
-        );
-        return;
-      }
-
-      // 4. youtube 테이블에 완성된 데이터 저장
-      const youtube = this.youtubeRepository.create({
-        link: request.link,
-        channelName: snippet.channelTitle,
-        channelId: snippet.channelId,
-        channelType: request.channelType,
-        title: videoTitle,
-        snippet: snippet.description,
-        publishedAt: new Date(snippet.publishedAt),
-        thumbnail:
-          snippet.thumbnails.high?.url || snippet.thumbnails.medium?.url,
-        sourceType: "manual",
-        processStatus: "completed",
-        processMessage: `처리 완료: ${articleDtos.length}개 Article 생성`,
-        processedAt: new Date(),
-      });
-      await this.youtubeRepository.save(youtube);
-
-      // 5. article 테이블에 저장
-      const articlesCreated = await this.saveArticles(articleDtos, videoTitle);
-
-      console.log(
-        `[Cocoscan Youtube]   - 수동 요청 처리 완료: ${videoTitle} (${articlesCreated}개 Article)`
-      );
-      await this.sendDiscordNotification(
-        `수동 URL 처리 완료\n**제목:** ${videoTitle}\n**Article:** ${articlesCreated}개\n**URL:** ${request.link}`
-      );
-
-      // 6. youtube_request 상태를 completed로 업데이트
-      await this.updateRequestStatus(
-        request.id,
-        "completed",
-        `처리 완료: ${articlesCreated}개 Article 생성`
-      );
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      await this.updateRequestStatus(request.id, "failed", errorMessage);
-      throw error;
-    }
-  }
-
-  /**
-   * 수동 등록 URL 처리 (youtube_request → youtube + article)
-   */
-  private async processManualUrls(): Promise<void> {
-    console.log("[Cocoscan Youtube] 수동 URL 처리 시작");
-
-    const requests = await this.findUnprocessedManualUrls();
-
-    if (requests.length === 0) {
-      console.log("[Cocoscan Youtube] 처리할 수동 URL 없음");
-      return;
-    }
-
-    console.log(`[Cocoscan Youtube] ${requests.length}개 수동 URL 처리 중...`);
-    await this.sendDiscordNotification(
-      `수동 URL 처리 시작\n**처리 대상:** ${requests.length}개`
-    );
-
-    let successCount = 0;
-    let failCount = 0;
-
-    for (let i = 0; i < requests.length; i++) {
-      const request = requests[i];
-      // 429 방지: 요청 간 3초 딜레이
-      if (i > 0) await this.delay(3000);
-
-      try {
-        await this.processManualRequest(request);
-        successCount++;
-      } catch (error) {
-        failCount++;
-        console.error(`[Cocoscan Youtube] 처리 실패: ${request.link}`, error);
-        await this.sendDiscordNotification(
-          `수동 URL 처리 실패\n**URL:** ${request.link}\n**에러:** ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          true
-        );
-      }
-    }
-
-    console.log(
-      `[Cocoscan Youtube] 수동 URL 처리 완료 (성공: ${successCount}, 실패: ${failCount})`
-    );
-    await this.sendDiscordNotification(
-      `수동 URL 처리 완료\n**성공:** ${successCount}개\n**실패:** ${failCount}개`
-    );
   }
 
   /**
@@ -1147,265 +96,17 @@ export class CocoscanYoutubeService {
 
     try {
       // 1. 수동 등록 URL 처리 (먼저 처리)
-      await this.processManualUrls();
+      await this.manualUrlProcessor.processAll();
 
       // 2. 기존: 채널 모니터링 (자동 크롤링)
       for (const channel of YOUTUBE_CHANNELS) {
         const { handle, channelType } = channel;
-        const storeName = STORE_NAME_MAP[channelType];
 
         try {
-          const channelResponse = await getChannelByHandle(handle, apiKey);
-          if (!channelResponse || channelResponse.items.length === 0) {
-            console.log(
-              `[Cocoscan Youtube] ${handle}: 채널을 찾을 수 없습니다.`
-            );
-            continue;
-          }
-
-          const channelId = channelResponse.items[0].id;
-          console.log(`[Cocoscan Youtube] ${handle}: 채널 ID = ${channelId}`);
-
-          const contentDetailsResponse = await getChannelContentDetails(
-            channelId,
-            apiKey
-          );
-          if (
-            !contentDetailsResponse ||
-            contentDetailsResponse.items.length === 0
-          ) {
-            console.log(
-              `[Cocoscan Youtube] ${handle}: contentDetails를 찾을 수 없습니다.`
-            );
-            continue;
-          }
-
-          const uploadsPlaylistId =
-            contentDetailsResponse.items[0].contentDetails.relatedPlaylists
-              .uploads;
-          if (!uploadsPlaylistId) {
-            console.log(
-              `[Cocoscan Youtube] ${handle}: uploads 플레이리스트를 찾을 수 없습니다.`
-            );
-            continue;
-          }
-
-          console.log(
-            `[Cocoscan Youtube] ${handle}: 플레이리스트 ID = ${uploadsPlaylistId}`
-          );
-
-          const playlistItemsResponse = await getPlaylistItems(
-            uploadsPlaylistId,
-            apiKey,
-            2
-          );
-          if (
-            !playlistItemsResponse ||
-            playlistItemsResponse.items.length === 0
-          ) {
-            console.log(
-              `[Cocoscan Youtube] ${handle}: 영상 목록을 찾을 수 없습니다.`
-            );
-            continue;
-          }
-
-          console.log(
-            `[Cocoscan Youtube] ${handle}: 총 ${playlistItemsResponse.pageInfo.totalResults}개의 영상 중 최근 ${playlistItemsResponse.items.length}개 조회 완료`
-          );
-
-          let registeredLinks: Set<string> = new Set();
-          try {
-            // 첫 페이지만 조회 (등록 여부 확인용)
-            const registeredVideos = await this.youtubeRepository.find({
-              where: { channelId },
-              take: 100,
-              select: ["link"],
-            });
-            registeredLinks = new Set(registeredVideos.map((v) => v.link));
-            console.log(
-              `[Cocoscan Youtube] ${handle}: 이미 등록된 영상 ${registeredLinks.size}개 확인`
-            );
-          } catch (error) {
-            console.error(
-              `[Cocoscan Youtube] ${handle}: 등록된 영상 목록 조회 실패:`,
-              error
-            );
-            await GlobalErrorHandler.handleError(
-              error as Error,
-              "CocoscanYoutubeService.findByChannelIdYoutube",
-              { channelId, handle }
-            );
-          }
-
-          const unregisteredVideos: Array<{
-            videoId: string;
-            link: string;
-            title: string;
-            snippet?: string;
-            channelName: string;
-            publishedAt: string;
-            thumbnail?: string;
-          }> = [];
-
-          for (const item of playlistItemsResponse.items) {
-            const videoId = item.contentDetails.videoId;
-            const link = `https://www.youtube.com/watch?v=${videoId}`;
-
-            if (registeredLinks.has(link)) {
-              console.log(
-                `[Cocoscan Youtube]   - [스킵] ${item.snippet.title} (이미 등록됨)`
-              );
-              continue;
-            }
-
-            unregisteredVideos.push({
-              videoId,
-              link,
-              title: item.snippet.title,
-              snippet: item.snippet.description,
-              channelName: item.snippet.channelTitle,
-              publishedAt: item.contentDetails.videoPublishedAt,
-              thumbnail: item.snippet.thumbnails.high?.url,
-            });
-          }
-
-          console.log(
-            `[Cocoscan Youtube] ${handle}: 등록되지 않은 영상 ${unregisteredVideos.length}개 발견`
-          );
-
-          let channelProcessed = 0;
-          let channelCreated = 0;
-          let channelErrors = 0;
-
-          for (const video of unregisteredVideos) {
-            try {
-              channelProcessed++;
-              totalProcessed++;
-
-              // 제목/설명에 관련 키워드가 있는지 먼저 확인 (효율성 개선)
-              const hasStoreInTitleOrSnippet = this.isStoreRelated(
-                channelType,
-                video.title,
-                video.snippet || "",
-                null
-              );
-
-              // 캡션 가져오기
-              console.log(
-                `[Cocoscan Youtube]   - 캡션 가져오는 중: ${video.title}`
-              );
-              const caption = await this.getVideoCaption(video.videoId);
-
-              // 제목/설명에 키워드가 없으면 캡션으로 추가 확인
-              if (!hasStoreInTitleOrSnippet) {
-                if (
-                  !this.isStoreRelated(
-                    channelType,
-                    video.title,
-                    video.snippet || "",
-                    caption
-                  )
-                ) {
-                  console.log(
-                    `[Cocoscan Youtube]   - [스킵] ${video.title} (${storeName} 관련 없음)`
-                  );
-                  continue;
-                }
-              }
-
-              // 캡션이 없으면 스킵
-              if (!caption) {
-                console.log(
-                  `[Cocoscan Youtube]   - [스킵] ${video.title} (캡션 없음)`
-                );
-                continue;
-              }
-
-              // 에이전트 기반으로 Article 생성 및 저장
-              console.log(
-                `[Cocoscan Youtube]   - 에이전트로 Article 생성 중 (${storeName}): ${video.title}`
-              );
-
-              // 1. Article 먼저 준비 (저장하지 않음)
-              const articleDtos = await this.prepareArticles(
-                video.link,
-                caption,
-                video.title,
-                storeName
-              );
-
-              // 2. Article이 성공적으로 준비되었으면 YouTube + Article 함께 저장
-              if (articleDtos.length > 0) {
-                // 2-1. YoutubeEntity 저장 (메타데이터 + channelType)
-                const youtube = this.youtubeRepository.create({
-                  link: video.link,
-                  channelName: video.channelName,
-                  channelId: channelId,
-                  channelType: channelType,
-                  title: video.title,
-                  snippet: video.snippet,
-                  publishedAt: new Date(video.publishedAt),
-                  thumbnail: video.thumbnail,
-                  sourceType: "auto",
-                  processStatus: "pending",
-                });
-                await this.youtubeRepository.save(youtube);
-                await this.sendDiscordNotification(
-                  `Youtube 저장 완료\n**제목:** ${video.title}\n**매장:** ${storeName}\n**채널:** ${handle}`
-                );
-
-                // 2-2. Article 저장
-                const articlesCreated = await this.saveArticles(
-                  articleDtos,
-                  video.title
-                );
-
-                console.log(
-                  `[Cocoscan Youtube]   - ✅ 등록 완료: ${video.title} (${articlesCreated}개 Article)`
-                );
-                channelCreated++;
-                totalCreated++;
-                await this.sendDiscordNotification(
-                  `✅ 영상 등록 완료\n**채널:** ${handle}\n**제목:** ${video.title}\n**Article:** ${articlesCreated}개`
-                );
-              } else {
-                console.log(
-                  `[Cocoscan Youtube]   - [스킵] ${video.title} (Article 생성 실패)`
-                );
-                await this.sendDiscordNotification(
-                  `⚠️ Article 생성 실패로 건너뜀\n**채널:** ${handle}\n**제목:** ${video.title}`,
-                  true
-                );
-              }
-            } catch (error) {
-              channelErrors++;
-              totalErrors++;
-              const errorMessage = `캡션/콘텐츠 처리 실패\n**채널:** ${handle}\n**영상:** ${
-                video.title
-              }\n**에러:** ${
-                error instanceof Error ? error.message : String(error)
-              }`;
-              console.error(
-                `[Cocoscan Youtube] 캡션/콘텐츠 처리 실패 (${video.title}):`,
-                error
-              );
-              await this.sendDiscordNotification(errorMessage, true);
-              await GlobalErrorHandler.handleError(
-                error as Error,
-                "CocoscanYoutubeService.processVideo",
-                { videoId: video.videoId, handle }
-              );
-            }
-          }
-
-          // 채널 처리 완료 알림 (새로 등록한 영상이 있을 때만)
-          if (channelCreated > 0) {
-            await this.sendDiscordNotification(
-              `채널 처리 완료\n**채널:** ${handle}\n**처리:** ${channelProcessed}개\n**생성:** ${channelCreated}개${
-                channelErrors > 0 ? `\n**에러:** ${channelErrors}개 ⚠️` : ""
-              }`
-            );
-          }
+          const result = await this.processChannel(handle, channelType, apiKey);
+          totalProcessed += result.processed;
+          totalCreated += result.created;
+          totalErrors += result.errors;
         } catch (error) {
           totalErrors++;
           const errorMessage = `채널 처리 실패\n**채널:** ${handle}\n**에러:** ${
@@ -1415,15 +116,15 @@ export class CocoscanYoutubeService {
           await GlobalErrorHandler.handleError(
             error as Error,
             "CocoscanYoutubeService.processChannel",
-            { handle }
+            { handle },
           );
         }
       }
 
-      // 검색 기반 수집 추가 (이마트 트레이더스)
+      // 3. 검색 기반 수집 (이마트 트레이더스)
       const searchResult = await this.processSearchBasedVideos(
         "이마트 트레이더스",
-        "emart_traders"
+        "emart_traders",
       );
       totalProcessed += searchResult.processed;
       totalCreated += searchResult.created;
@@ -1432,19 +133,467 @@ export class CocoscanYoutubeService {
       // 최종 통계 알림
       if (totalProcessed > 0 || totalCreated > 0 || totalErrors > 0) {
         await this.sendDiscordNotification(
-          `전체 작업 완료\n**총 처리:** ${totalProcessed}개 영상\n**총 생성:** ${totalCreated}개 영상\n**총 에러:** ${totalErrors}개 ⚠️`
+          `전체 작업 완료\n**총 처리:** ${totalProcessed}개 영상\n**총 생성:** ${totalCreated}개 영상\n**총 에러:** ${totalErrors}개 ⚠️`,
         );
       }
     } catch (error) {
-      // 전체 프로세스 에러 알림
       const errorMessage = `전체 작업 실패\n**에러:** ${
         error instanceof Error ? error.message : String(error)
       }`;
       await this.sendDiscordNotification(errorMessage, true);
       await GlobalErrorHandler.handleError(
         error as Error,
-        "CocoscanYoutubeService.process"
+        "CocoscanYoutubeService.process",
       );
+    }
+  }
+
+  /**
+   * 단일 채널의 최신 영상을 처리합니다.
+   */
+  private async processChannel(
+    handle: string,
+    channelType: ChannelType,
+    apiKey: string,
+  ): Promise<{ processed: number; created: number; errors: number }> {
+    const storeName = STORE_NAME_MAP[channelType];
+
+    const channelResponse = await getChannelByHandle(handle, apiKey);
+    if (!channelResponse || channelResponse.items.length === 0) {
+      console.log(`[Cocoscan Youtube] ${handle}: 채널을 찾을 수 없습니다.`);
+      return { processed: 0, created: 0, errors: 0 };
+    }
+
+    const channelId = channelResponse.items[0].id;
+    console.log(`[Cocoscan Youtube] ${handle}: 채널 ID = ${channelId}`);
+
+    const contentDetailsResponse = await getChannelContentDetails(
+      channelId,
+      apiKey,
+    );
+    if (!contentDetailsResponse || contentDetailsResponse.items.length === 0) {
+      console.log(
+        `[Cocoscan Youtube] ${handle}: contentDetails를 찾을 수 없습니다.`,
+      );
+      return { processed: 0, created: 0, errors: 0 };
+    }
+
+    const uploadsPlaylistId =
+      contentDetailsResponse.items[0].contentDetails.relatedPlaylists.uploads;
+    if (!uploadsPlaylistId) {
+      console.log(
+        `[Cocoscan Youtube] ${handle}: uploads 플레이리스트를 찾을 수 없습니다.`,
+      );
+      return { processed: 0, created: 0, errors: 0 };
+    }
+
+    console.log(
+      `[Cocoscan Youtube] ${handle}: 플레이리스트 ID = ${uploadsPlaylistId}`,
+    );
+
+    const playlistItemsResponse = await getPlaylistItems(
+      uploadsPlaylistId,
+      apiKey,
+      2,
+    );
+    if (!playlistItemsResponse || playlistItemsResponse.items.length === 0) {
+      console.log(
+        `[Cocoscan Youtube] ${handle}: 영상 목록을 찾을 수 없습니다.`,
+      );
+      return { processed: 0, created: 0, errors: 0 };
+    }
+
+    console.log(
+      `[Cocoscan Youtube] ${handle}: 총 ${playlistItemsResponse.pageInfo.totalResults}개의 영상 중 최근 ${playlistItemsResponse.items.length}개 조회 완료`,
+    );
+
+    let registeredLinks: Set<string> = new Set();
+    try {
+      const registeredVideos = await this.youtubeRepository.find({
+        where: { channelId },
+        take: 100,
+        select: ["link"],
+      });
+      registeredLinks = new Set(registeredVideos.map((v) => v.link));
+      console.log(
+        `[Cocoscan Youtube] ${handle}: 이미 등록된 영상 ${registeredLinks.size}개 확인`,
+      );
+    } catch (error) {
+      console.error(
+        `[Cocoscan Youtube] ${handle}: 등록된 영상 목록 조회 실패:`,
+        error,
+      );
+      await GlobalErrorHandler.handleError(
+        error as Error,
+        "CocoscanYoutubeService.findByChannelIdYoutube",
+        { channelId, handle },
+      );
+    }
+
+    const unregisteredVideos: Array<{
+      videoId: string;
+      link: string;
+      title: string;
+      snippet?: string;
+      channelName: string;
+      publishedAt: string;
+      thumbnail?: string;
+    }> = [];
+
+    for (const item of playlistItemsResponse.items) {
+      const videoId = item.contentDetails.videoId;
+      const link = `https://www.youtube.com/watch?v=${videoId}`;
+
+      if (registeredLinks.has(link)) {
+        console.log(
+          `[Cocoscan Youtube]   - [스킵] ${item.snippet.title} (이미 등록됨)`,
+        );
+        continue;
+      }
+
+      unregisteredVideos.push({
+        videoId,
+        link,
+        title: item.snippet.title,
+        snippet: item.snippet.description,
+        channelName: item.snippet.channelTitle,
+        publishedAt: item.contentDetails.videoPublishedAt,
+        thumbnail: item.snippet.thumbnails.high?.url,
+      });
+    }
+
+    console.log(
+      `[Cocoscan Youtube] ${handle}: 등록되지 않은 영상 ${unregisteredVideos.length}개 발견`,
+    );
+
+    let channelProcessed = 0;
+    let channelCreated = 0;
+    let channelErrors = 0;
+
+    for (const video of unregisteredVideos) {
+      try {
+        channelProcessed++;
+
+        // 제목/설명에 관련 키워드가 있는지 먼저 확인
+        const hasStoreInTitleOrSnippet = this.isStoreRelated(
+          channelType,
+          video.title,
+          video.snippet || "",
+          null,
+        );
+
+        // 캡션 가져오기
+        console.log(`[Cocoscan Youtube]   - 캡션 가져오는 중: ${video.title}`);
+        const caption = await this.captionService.getVideoCaption(
+          video.videoId,
+        );
+
+        // 제목/설명에 키워드가 없으면 캡션으로 추가 확인
+        if (!hasStoreInTitleOrSnippet) {
+          if (
+            !this.isStoreRelated(
+              channelType,
+              video.title,
+              video.snippet || "",
+              caption,
+            )
+          ) {
+            console.log(
+              `[Cocoscan Youtube]   - [스킵] ${video.title} (${storeName} 관련 없음)`,
+            );
+            continue;
+          }
+        }
+
+        // 캡션이 없으면 스킵
+        if (!caption) {
+          console.log(
+            `[Cocoscan Youtube]   - [스킵] ${video.title} (캡션 없음)`,
+          );
+          continue;
+        }
+
+        // 에이전트 기반으로 Article 생성 및 저장
+        console.log(
+          `[Cocoscan Youtube]   - 에이전트로 Article 생성 중 (${storeName}): ${video.title}`,
+        );
+
+        // 1. Article 먼저 준비 (저장하지 않음)
+        const articleDtos = await this.articleService.prepareArticles(
+          video.link,
+          caption,
+          video.title,
+          storeName,
+        );
+
+        // 2. Article이 성공적으로 준비되었으면 YouTube + Article 함께 저장
+        if (articleDtos.length > 0) {
+          const youtube = this.youtubeRepository.create({
+            link: video.link,
+            channelName: video.channelName,
+            channelId: channelId,
+            channelType: channelType,
+            title: video.title,
+            snippet: video.snippet,
+            publishedAt: new Date(video.publishedAt),
+            thumbnail: video.thumbnail,
+            sourceType: "auto",
+            processStatus: "pending",
+          });
+          await this.youtubeRepository.save(youtube);
+          await this.sendDiscordNotification(
+            `Youtube 저장 완료\n**제목:** ${video.title}\n**매장:** ${storeName}\n**채널:** ${handle}`,
+          );
+
+          const articlesCreated = await this.articleService.saveArticles(
+            articleDtos,
+            video.title,
+          );
+
+          console.log(
+            `[Cocoscan Youtube]   - ✅ 등록 완료: ${video.title} (${articlesCreated}개 Article)`,
+          );
+          channelCreated++;
+          await this.sendDiscordNotification(
+            `✅ 영상 등록 완료\n**채널:** ${handle}\n**제목:** ${video.title}\n**Article:** ${articlesCreated}개`,
+          );
+        } else {
+          console.log(
+            `[Cocoscan Youtube]   - [스킵] ${video.title} (Article 생성 실패)`,
+          );
+          await this.sendDiscordNotification(
+            `⚠️ Article 생성 실패로 건너뜀\n**채널:** ${handle}\n**제목:** ${video.title}`,
+            true,
+          );
+        }
+      } catch (error) {
+        channelErrors++;
+        const errorMessage = `캡션/콘텐츠 처리 실패\n**채널:** ${handle}\n**영상:** ${
+          video.title
+        }\n**에러:** ${error instanceof Error ? error.message : String(error)}`;
+        console.error(
+          `[Cocoscan Youtube] 캡션/콘텐츠 처리 실패 (${video.title}):`,
+          error,
+        );
+        await this.sendDiscordNotification(errorMessage, true);
+        await GlobalErrorHandler.handleError(
+          error as Error,
+          "CocoscanYoutubeService.processVideo",
+          { videoId: video.videoId, handle },
+        );
+      }
+    }
+
+    // 채널 처리 완료 알림 (새로 등록한 영상이 있을 때만)
+    if (channelCreated > 0) {
+      await this.sendDiscordNotification(
+        `채널 처리 완료\n**채널:** ${handle}\n**처리:** ${channelProcessed}개\n**생성:** ${channelCreated}개${
+          channelErrors > 0 ? `\n**에러:** ${channelErrors}개 ⚠️` : ""
+        }`,
+      );
+    }
+
+    return {
+      processed: channelProcessed,
+      created: channelCreated,
+      errors: channelErrors,
+    };
+  }
+
+  /**
+   * 키워드 검색을 기반으로 영상을 수집하고 처리합니다.
+   */
+  private async processSearchBasedVideos(
+    keyword: string,
+    channelType: ChannelType,
+  ): Promise<{ processed: number; created: number; errors: number }> {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (!apiKey) return { processed: 0, created: 0, errors: 0 };
+
+    const storeName = STORE_NAME_MAP[channelType];
+    console.log(
+      `[Cocoscan Youtube] '${keyword}' 키워드로 검색 기반 수집 시작...`,
+    );
+
+    let processedCount = 0;
+    let createdCount = 0;
+    let errorCount = 0;
+
+    try {
+      const searchResult = await searchVideos(keyword, apiKey, 10);
+      if (!searchResult || searchResult.items.length === 0) {
+        console.log(`[Cocoscan Youtube] '${keyword}' 검색 결과가 없습니다.`);
+        return { processed: 0, created: 0, errors: 0 };
+      }
+
+      for (const item of searchResult.items) {
+        try {
+          const videoId = item.id.videoId;
+          const link = `https://www.youtube.com/watch?v=${videoId}`;
+          const title = item.snippet.title;
+
+          // 1차 필터: 이미 등록된 영상인지 확인
+          const existingVideo = await this.youtubeRepository.findOne({
+            where: { link },
+          });
+          if (existingVideo) {
+            console.log(
+              `[Cocoscan Youtube]   - [스킵] ${title} (이미 등록된 링크)`,
+            );
+            continue;
+          }
+
+          processedCount++;
+
+          // 캡션 가져오기
+          console.log(`[Cocoscan Youtube]   - 캡션 가져오는 중: ${title}`);
+          const caption = await this.captionService.getVideoCaption(videoId);
+
+          if (!caption) {
+            console.log(`[Cocoscan Youtube]   - [스킵] ${title} (캡션 없음)`);
+            continue;
+          }
+
+          // 2차 필터: 캡션 내 키워드 포함 여부 및 길이 체크 (200자 이상)
+          if (!this.isStoreRelated(channelType, title, "", caption)) {
+            console.log(
+              `[Cocoscan Youtube]   - [스킵] ${title} (${storeName} 관련 키워드 없음)`,
+            );
+            continue;
+          }
+
+          if (caption.length < 200) {
+            console.log(
+              `[Cocoscan Youtube]   - [스킵] ${title} (캡션 길이 부족: ${caption.length}자)`,
+            );
+            continue;
+          }
+
+          // 에이전트 실행 및 저장
+          console.log(
+            `[Cocoscan Youtube]   - 에이전트로 Article 생성 중 (${storeName}): ${title}`,
+          );
+
+          // 1. Article 먼저 준비 (저장하지 않음)
+          const articleDtos = await this.articleService.prepareArticles(
+            link,
+            caption,
+            title,
+            storeName,
+          );
+
+          // 2. Article이 성공적으로 준비되었으면 YouTube + Article 함께 저장
+          if (articleDtos.length > 0) {
+            const youtube = this.youtubeRepository.create({
+              link,
+              channelName: item.snippet.channelTitle,
+              channelId: item.snippet.channelId,
+              channelType,
+              title,
+              snippet: item.snippet.description,
+              publishedAt: new Date(item.snippet.publishedAt),
+              thumbnail: item.snippet.thumbnails.high?.url,
+              sourceType: "auto",
+              processStatus: "pending",
+            });
+            await this.youtubeRepository.save(youtube);
+            await this.sendDiscordNotification(
+              `Youtube 저장 완료\n**제목:** ${title}\n**매장:** ${storeName}\n**검색어:** ${keyword}`,
+            );
+
+            const articlesCreated = await this.articleService.saveArticles(
+              articleDtos,
+              title,
+            );
+
+            console.log(
+              `[Cocoscan Youtube]   - ✅ 등록 완료: ${title} (${articlesCreated}개 Article)`,
+            );
+            createdCount++;
+            await this.sendDiscordNotification(
+              `✅ 검색 기반 영상 등록 완료\n**검색어:** ${keyword}\n**제목:** ${title}\n**Article:** ${articlesCreated}개`,
+            );
+          } else {
+            console.log(
+              `[Cocoscan Youtube]   - [스킵] ${title} (Article 생성 실패)`,
+            );
+            await this.sendDiscordNotification(
+              `⚠️ Article 생성 실패로 건너뜀\n**검색어:** ${keyword}\n**제목:** ${title}`,
+              true,
+            );
+          }
+        } catch (error) {
+          errorCount++;
+          const errorMessage = `검색 결과 처리 중 오류\n**검색어:** ${keyword}\n**영상:** ${
+            item.snippet.title
+          }\n**에러:** ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          console.error(
+            `[Cocoscan Youtube] 검색 결과 처리 중 오류 (${item.snippet.title}):`,
+            error,
+          );
+          await this.sendDiscordNotification(errorMessage, true);
+          await GlobalErrorHandler.handleError(
+            error as Error,
+            "CocoscanYoutubeService.processSearchBasedVideos",
+            { videoId: item.id.videoId, keyword },
+          );
+        }
+      }
+
+      return {
+        processed: processedCount,
+        created: createdCount,
+        errors: errorCount,
+      };
+    } catch (error) {
+      console.error(
+        `[Cocoscan Youtube] 검색 기반 수집 실패 (${keyword}):`,
+        error,
+      );
+      return { processed: 0, created: 0, errors: 1 };
+    }
+  }
+
+  /**
+   * 영상이 해당 매장과 관련이 있는지 확인합니다.
+   */
+  private isStoreRelated(
+    channelType: ChannelType,
+    title: string,
+    description: string,
+    caption: string | null,
+  ): boolean {
+    const keywords = STORE_KEYWORD_MAP[channelType];
+    const titleLower = title.toLowerCase();
+    const descriptionLower = description.toLowerCase();
+    const captionLower = caption?.toLowerCase() || "";
+
+    return keywords.some(
+      (keyword) =>
+        titleLower.includes(keyword) ||
+        descriptionLower.includes(keyword) ||
+        captionLower.includes(keyword),
+    );
+  }
+
+  private extractVideoId(url: string): string {
+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?]+)/);
+    return match ? match[1] : "";
+  }
+
+  private async sendDiscordNotification(
+    message: string,
+    isError = false,
+  ): Promise<void> {
+    try {
+      const emoji = isError ? "🚨" : "✅";
+      const timestamp = new Date().toISOString();
+      const fullMessage = `${emoji} **Cocoscan Youtube**\n\n${message}\n\n**시간:** ${timestamp}`;
+      await sendDiscordMessage(fullMessage, COCOSCAN_DISCORD_WEBHOOK_URL);
+    } catch (error) {
+      console.error("[Discord] 알림 전송 실패:", error);
     }
   }
 }
