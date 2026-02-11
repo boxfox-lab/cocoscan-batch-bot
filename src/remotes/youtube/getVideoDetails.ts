@@ -1,4 +1,5 @@
 import axios from "axios";
+import { isQuotaExceededError, QuotaExceededError } from "./errors";
 
 export interface YouTubeVideoResponse {
   items: Array<{
@@ -20,7 +21,7 @@ export interface YouTubeVideoResponse {
 
 export async function getVideoDetails(
   videoId: string,
-  apiKey: string
+  apiKey: string,
 ): Promise<YouTubeVideoResponse | null> {
   try {
     const response = await axios.get<YouTubeVideoResponse>(
@@ -31,10 +32,13 @@ export async function getVideoDetails(
           id: videoId,
           key: apiKey,
         },
-      }
+      },
     );
     return response.data;
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      throw new QuotaExceededError(apiKey);
+    }
     console.error(`[YouTube API] 비디오 정보 조회 실패 (${videoId}):`, error);
     return null;
   }

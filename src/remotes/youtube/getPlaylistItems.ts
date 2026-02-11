@@ -1,5 +1,6 @@
-import axios from 'axios';
-import { sendExceptionToDiscord } from '../discord/sendExceptionToDiscord';
+import axios from "axios";
+import { sendExceptionToDiscord } from "../discord/sendExceptionToDiscord";
+import { isQuotaExceededError, QuotaExceededError } from "./errors";
 
 export interface YouTubePlaylistItemsResponse {
   kind: string;
@@ -68,10 +69,10 @@ export async function getPlaylistItems(
 ): Promise<YouTubePlaylistItemsResponse | null> {
   try {
     const response = await axios.get<YouTubePlaylistItemsResponse>(
-      'https://www.googleapis.com/youtube/v3/playlistItems',
+      "https://www.googleapis.com/youtube/v3/playlistItems",
       {
         params: {
-          part: 'snippet,contentDetails',
+          part: "snippet,contentDetails",
           playlistId,
           maxResults,
           key: apiKey,
@@ -81,10 +82,13 @@ export async function getPlaylistItems(
 
     return response.data;
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      throw new QuotaExceededError(apiKey);
+    }
     await sendExceptionToDiscord(error, {
       playlistId,
       maxResults,
-      apiKey: apiKey.substring(0, 10) + '...', // API 키 일부만 로깅
+      apiKey: apiKey.substring(0, 10) + "...",
     });
     return null;
   }

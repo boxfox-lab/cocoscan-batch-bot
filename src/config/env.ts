@@ -1,4 +1,4 @@
-import { sendDevMessage } from '../remotes/discord';
+import { sendDevMessage } from "../remotes/discord";
 
 const {
   GEMINI_API_KEY,
@@ -12,10 +12,10 @@ const {
  * 필수 환경변수 목록
  */
 const REQUIRED_ENV_VARS = {
-  GEMINI_API_KEY: 'Google Gemini API 키 (AI 요약용)',
-  YOUTUBE_API_KEY: 'YouTube Data API 키',
-  GOOGLE_SEARCH_API_KEY: 'Google Custom Search API 키',
-  GOOGLE_SEARCH_ENGINE_ID: 'Google Custom Search Engine ID',
+  GEMINI_API_KEY: "Google Gemini API 키 (AI 요약용)",
+  YOUTUBE_API_KEY: "YouTube Data API 키 (콤마 구분으로 복수 키 지원)",
+  GOOGLE_SEARCH_API_KEY: "Google Custom Search API 키",
+  GOOGLE_SEARCH_ENGINE_ID: "Google Custom Search Engine ID",
 } as const;
 
 /**
@@ -41,7 +41,7 @@ export async function validateEnvironmentVariables(): Promise<boolean> {
 
 **누락된 환경변수:** ${missingVars.length}개
 
-${details.join('\n')}
+${details.join("\n")}
 
 **해결 방법:**
 1. \`.env\` 파일에 누락된 환경변수 추가
@@ -51,19 +51,19 @@ ${details.join('\n')}
 **시간:** ${new Date().toISOString()}
     `.trim();
 
-    console.error('🚨 환경변수 검증 실패:', missingVars);
+    console.error("🚨 환경변수 검증 실패:", missingVars);
 
     try {
       // Discord로 알림 전송
       await sendDevMessage(errorMessage);
     } catch (discordError) {
-      console.error('Discord 알림 전송 실패:', discordError);
+      console.error("Discord 알림 전송 실패:", discordError);
     }
 
     return false;
   }
 
-  console.log('✅ 모든 필수 환경변수 검증 완료');
+  console.log("✅ 모든 필수 환경변수 검증 완료");
   return true;
 }
 

@@ -1,5 +1,6 @@
-import axios from 'axios';
-import { sendExceptionToDiscord } from '../discord/sendExceptionToDiscord';
+import axios from "axios";
+import { sendExceptionToDiscord } from "../discord/sendExceptionToDiscord";
+import { isQuotaExceededError, QuotaExceededError } from "./errors";
 
 export interface YouTubeChannelResponse {
   kind: string;
@@ -21,11 +22,11 @@ export async function getChannelByHandle(
 ): Promise<YouTubeChannelResponse | null> {
   try {
     const response = await axios.get<YouTubeChannelResponse>(
-      'https://www.googleapis.com/youtube/v3/channels',
+      "https://www.googleapis.com/youtube/v3/channels",
       {
         params: {
-          part: 'id',
-          forHandle: handle.startsWith('@') ? handle : `@${handle}`,
+          part: "id",
+          forHandle: handle.startsWith("@") ? handle : `@${handle}`,
           key: apiKey,
         },
       },
@@ -33,9 +34,12 @@ export async function getChannelByHandle(
 
     return response.data;
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      throw new QuotaExceededError(apiKey);
+    }
     await sendExceptionToDiscord(error, {
       handle,
-      apiKey: apiKey.substring(0, 10) + '...', // API 키 일부만 로깅
+      apiKey: apiKey.substring(0, 10) + "...",
     });
     return null;
   }

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { sendExceptionToDiscord } from "../discord/sendExceptionToDiscord";
+import { isQuotaExceededError, QuotaExceededError } from "./errors";
 
 export interface YouTubeSearchResponse {
   kind: string;
@@ -56,6 +57,9 @@ export async function searchVideos(
 
     return response.data;
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      throw new QuotaExceededError(apiKey);
+    }
     const responseData = axios.isAxiosError(error)
       ? error.response?.data
       : undefined;
