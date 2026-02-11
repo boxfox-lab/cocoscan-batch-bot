@@ -1,5 +1,5 @@
-import axios from 'axios';
-import { sendExceptionToDiscord } from '../discord/sendExceptionToDiscord';
+import axios from "axios";
+import { sendExceptionToDiscord } from "../discord/sendExceptionToDiscord";
 
 export interface YouTubeSearchResponse {
   kind: string;
@@ -41,13 +41,13 @@ export async function searchVideos(
 ): Promise<YouTubeSearchResponse | null> {
   try {
     const response = await axios.get<YouTubeSearchResponse>(
-      'https://www.googleapis.com/youtube/v3/search',
+      "https://www.googleapis.com/youtube/v3/search",
       {
         params: {
-          part: 'snippet',
+          part: "snippet",
           q: query,
-          type: 'video',
-          order: 'relevance',
+          type: "video",
+          order: "relevance",
           maxResults,
           key: apiKey,
         },
@@ -56,10 +56,14 @@ export async function searchVideos(
 
     return response.data;
   } catch (error) {
+    const responseData = axios.isAxiosError(error)
+      ? error.response?.data
+      : undefined;
     await sendExceptionToDiscord(error, {
       query,
       maxResults,
-      apiKey: apiKey.substring(0, 10) + '...',
+      apiKey: apiKey.substring(0, 10) + "...",
+      responseData,
     });
     return null;
   }
