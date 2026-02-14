@@ -4,6 +4,7 @@ import { ArticleEntity } from "../../../entity/article.entity";
 import { sendDiscordMessage } from "../../../remotes/discord/sendDiscordMessage";
 import { GlobalErrorHandler } from "../../../util/error/global-error-handler";
 import { CostcoSummaryService } from "../../costco-summary";
+import { ThumbnailService } from "./thumbnail.service";
 
 const COCOSCAN_DISCORD_WEBHOOK_URL =
   "https://discord.com/api/webhooks/1442706911119151276/qVB4crG3fHSgtPUxehMT9QkxyXzqsx47p7FCT0lhZHL6Mgj-G2LYb86PjQl_RHN0HYoO";
@@ -17,14 +18,17 @@ export interface CreateArticleDto {
   summary: string;
   keywords: string[];
   products: any[];
+  thumbnail?: string;
 }
 
 export class ArticlePersistenceService {
   private readonly costcoSummaryService: CostcoSummaryService;
+  private readonly thumbnailService: ThumbnailService;
   private readonly articleRepository: Repository<ArticleEntity>;
 
   constructor() {
     this.costcoSummaryService = new CostcoSummaryService();
+    this.thumbnailService = new ThumbnailService();
     this.articleRepository = AppDataSource.getRepository(ArticleEntity);
   }
 
@@ -67,8 +71,28 @@ export class ArticlePersistenceService {
         }개`,
       );
 
+      // Article별 고유 썸네일 조회 (실패 시 무시 → backend에서 yt.thumbnail fallback)
+      let thumbnailMap = new Map<
+        number,
+        { imageUrl: string; source: string; altText: string }
+      >();
+      try {
+        thumbnailMap = await this.thumbnailService.findThumbnailsForBatch(
+          generatedArticles.map((a) => ({
+            category: a.category,
+            title: a.title,
+            keywords: a.keywords,
+          })),
+        );
+      } catch (error) {
+        console.error(
+          "[ArticlePersistence] 썸네일 조회 실패 (계속 진행):",
+          error,
+        );
+      }
+
       const articleDtos: CreateArticleDto[] = generatedArticles.map(
-        (article) => ({
+        (article, index) => ({
           youtubeLink: videoLink,
           topicTitle: article.topicTitle,
           category: article.category,
@@ -77,6 +101,7 @@ export class ArticlePersistenceService {
           summary: article.summary,
           keywords: article.keywords,
           products: article.products,
+          thumbnail: thumbnailMap.get(index)?.imageUrl,
         }),
       );
 

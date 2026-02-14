@@ -44,4 +44,6 @@ export interface GeneratedArticle {
   products: AnalyzedProduct[];
   /** SEO 키워드 */
   keywords: string[];
+  /** Article 고유 썸네일 URL */
+  thumbnail?: string;
 }

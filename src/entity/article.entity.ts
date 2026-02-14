@@ -47,6 +47,9 @@ export class ArticleEntity {
   @Column({ type: "json", nullable: true })
   products: any[];
 
+  @Column({ type: "text", nullable: true })
+  thumbnail: string;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt: Date;
 
